@@ -6,11 +6,22 @@
 ladder:
   # Fetchers in the order a request climbs them, cheapest first.
   - plain
+  # The Paid Fetcher (Firecrawl) is always last: it spends quota. Its key comes from
+  # FIRECRAWL_API_KEY in .env, never from this file.
+  - paid
 
 plain:
   # Browser whose network signature (TLS, HTTP/2, headers) the plain download imitates.
   impersonate: chrome
   timeout_s: 20
+
+paid:
+  base_url: https://api.firecrawl.dev
+  timeout_s: 60
+  # Once Firecrawl reports the quota exhausted, the Paid Fetcher is unavailable and
+  # requests that need it fail. Every this-many seconds one request checks again
+  # (a refused request costs nothing), so it comes back on its own after the monthly reset.
+  quota_recheck_s: 21600
 
 gate:
   # Extracted text shorter than this is not real content (rejected).

@@ -66,19 +66,22 @@ CF_HEADERS = {"cf-mitigated": "challenge", "server": "cloudflare"}
 
 
 def assert_failure(status: int, body: dict, reason: str) -> None:  # type: ignore[type-arg]
+    """The plain download was rejected for `reason`, escalated to the Paid Fetcher
+    (which the fake Firecrawl, not set up for these URLs, couldn't help), and the
+    Caller got an explicit failure rather than content."""
     assert status == 502
     assert body["success"] is False
     assert "data" not in body
-    assert body["attempts"] == [
-        {
-            "fetcher": "plain",
-            "verdict": "rejected",
-            "reason": reason,
-            "detail": body["attempts"][0]["detail"],
-            "statusCode": body["attempts"][0]["statusCode"],
-        }
-    ]
-    assert f"plain: rejected ({reason})" in body["error"]
+    plain, paid = body["attempts"]
+    assert plain == {
+        "fetcher": "plain",
+        "verdict": "rejected",
+        "reason": reason,
+        "detail": plain["detail"],
+        "statusCode": plain["statusCode"],
+    }
+    assert (paid["fetcher"], paid["verdict"]) == ("paid", "rejected")
+    assert f"plain: rejected ({reason}); paid: rejected" in body["error"]
 
 
 def test_cloudflare_challenge_is_polled_then_fails_naming_the_verdict(
