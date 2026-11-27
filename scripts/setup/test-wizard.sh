@@ -47,7 +47,9 @@ fake tailscale 'cat "$FAKE/status.json"'
 fake ssh 'cmd="${@: -1}"; printf "%s\n" "$cmd" >> "$FAKE/ssh.log"
 case "$cmd" in
   *"cat > "*) cat > "$FAKE/remote.env" ;;
-  "cat "*)    cat "$FAKE/remote.env" 2>/dev/null || true ;;
+  "if [ -e "*)
+    [[ -e "$FAKE/unreadable" ]] && { echo "Permission denied" >&2; exit 1; }
+    cat "$FAKE/remote.env" 2>/dev/null || true ;;
   *)          true ;;
 esac'
 
@@ -71,7 +73,11 @@ fake gh 'case "$1 $2" in
 esac'
 
 fake claude 'if [[ "$1" == setup-token ]]; then echo "token: sk-ant-oat01-printed"; exit 0; fi
-[[ "${CLAUDE_CODE_OAUTH_TOKEN:-}" == *BAD* ]] && exit 1; echo ok'
+printf "%s\n" "$*" >> "$FAKE/claude.log"
+# A bad token gets an error that still exits 0 and contains "ok" (as in "token").
+[[ "${CLAUDE_CODE_OAUTH_TOKEN:-}" == *BAD* ]] && { echo "Invalid OAuth token"; exit 0; }
+[[ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]] && { echo ok; exit 0; }  # falls back to the Mac login
+echo ok'
 
 fake open 'true'; fake xdg-open 'true'; fake pbcopy 'cat > /dev/null'
 
@@ -97,7 +103,8 @@ echo "run 1: first-time setup"
   echo "exa-good"; echo ""
   echo "tvly-good"; echo ""
   echo "ghp_classic"; echo "github_pat_good"; echo ""  # classic token refused
-  echo ""; echo "sk-ant-oat01-good"; echo ""            # run setup-token, paste
+  echo ""; echo ""; echo "sk-ant-oat01-BAD"             # run setup-token; empty, bad
+  echo "sk-ant-oat01-good"; echo ""                     # then the good token
   echo "tskey-wrong"; echo "tskey-auth-good"; echo ""   # bad prefix re-asked
 } | run_wizard && rc=0 || rc=$?
 
@@ -117,6 +124,7 @@ check "answers saved locally"                grep -qx "PI5_SSH_USER='pi'" "$FAKE
 check "default desktop name used"            grep -qx "DESKTOP_HOST='GM-DESKTOP'" "$FAKE/setup.env"
 check "local answers hold no secret"         no_secret_in "$FAKE/setup.env"
 check "keys never on curl's command line"    no_secret_in "$FAKE/curl.log"
+check "token never on claude's command line" no_secret_in "$FAKE/claude.log"
 check "no temp files left behind"            [ -z "$(ls -A "$TMP")" ]
 check "policy snippet has CI port rule"      grep -q '"tag:ci"\], "dst": \["gtt-pi5"\], "ip": \["tcp:3002"\]' "$FAKE/out.log"
 check "policy SSH rule uses pi5's tag"       grep -q '"dst": \["tag:pi"\], "users": \["pi"\]' "$FAKE/out.log"
@@ -141,6 +149,17 @@ check "re-run leaves pi5's env unchanged"    cmp -s "$T/remote.before" "$FAKE/re
 check "re-run keeps Claude secret"           secret_is CLAUDE_CODE_OAUTH_TOKEN sk-ant-oat01-good
 check "re-run keeps Tailscale secret"        secret_is TS_AUTHKEY tskey-auth-good
 check "re-run keeps answers"                 grep -qx "HERMES_SSH_USER='garrett'" "$FAKE/setup.env"
+
+# ── run 2b: pi5's env file exists but can't be read ───────────────────────
+echo "run 2b: unreadable env file on pi5"
+touch "$FAKE/unreadable"
+{
+  echo ""; for _ in 1 2 3 4 5 6; do echo ""; done; echo "y"; echo ""
+  echo ""; echo ""                          # ssh stage; the read check fails, input ends
+} | run_wizard && rc=0 || rc=$?
+rm -f "$FAKE/unreadable"
+check "unreadable env file stops the wizard" [ "$rc" -ne 0 ]
+check "unreadable env file is left intact"   cmp -s "$T/remote.before" "$FAKE/remote.env"
 
 # ── run 3: input ends early, the wizard stops instead of hanging ──────────
 echo "run 3: input ends early"

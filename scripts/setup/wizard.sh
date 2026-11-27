@@ -276,7 +276,10 @@ ask_default() {
 
 pull_pi5_env() {
   (umask 077 && : > "$PI5_ENV_LOCAL")
-  ssh "${SSH_OPTS[@]}" "$PI5_SSH_USER@$PI5_HOST" "cat $PI5_ENV_PATH 2>/dev/null || true" > "$PI5_ENV_LOCAL"
+  # No file yet is fine; a file we can't read must fail, or the next push
+  # would replace it with only the keys entered this run.
+  ssh "${SSH_OPTS[@]}" "$PI5_SSH_USER@$PI5_HOST" \
+    "if [ -e $PI5_ENV_PATH ]; then cat $PI5_ENV_PATH; fi" > "$PI5_ENV_LOCAL"
 }
 
 # PI5_ENV_PATH is checked against a safe pattern in stage 1, so it can go into
@@ -338,10 +341,15 @@ check_dispatch() {
     '{"event_type":"setup-wizard-check"}'
 }
 
+# The token goes in through a subshell's environment, not the command line,
+# so it stays out of `ps`. Empty is refused: claude would fall back to this
+# Mac's own login and pass.
 check_claude() {
+  [[ -n "$1" ]] || { LAST_WHY="nothing pasted"; return 1; }
   LAST_WHY="Claude didn't answer using that token"
-  env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN="$1" \
-    claude -p "Reply with the single word: ok" 2>/dev/null | grep -qi 'ok'
+  ( unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN
+    export CLAUDE_CODE_OAUTH_TOKEN="$1"
+    claude -p "Reply with the single word: ok" 2>/dev/null ) | grep -qiE '^ *ok[.!]? *$'
 }
 
 check_ts_authkey() {
@@ -361,7 +369,11 @@ capture_key() {
     if "$check" "${!key}"; then ok "$key works"; break; fi
     warn "that didn't work ($LAST_WHY). Copy it again and paste it."
   done
-  save_pi5 "$key" "${!key}"
+  if [[ "${!key}" == "$(_existing "$key" || true)" ]]; then
+    ok "$key already saved on pi5"
+  else
+    save_pi5 "$key" "${!key}"
+  fi
 }
 
 secret_exists() {
@@ -518,6 +530,7 @@ say  "    {\"src\": [\"autogroup:member\"], \"dst\": [\"*\"],"
 say  "     \"ip\": [\"tcp:1-21\", \"tcp:23-65535\", \"udp:*\", \"icmp:*\"]},"
 note "That keeps your own devices reaching everything except port 22. Tagged devices"
 note "(pi5 is tag:pi) stop starting connections to others; add a grant if pi5 needs one."
+note "SSH to any other machine then needs its own tcp:22 grant, like the one above."
 step "Click Save. Tailscale checks the syntax and refuses a broken file."
 gate "Saved, and nothing else opens port 22 on pi5 or hermes to other devices?"
 ok "Tailscale policy updated"
