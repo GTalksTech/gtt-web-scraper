@@ -315,6 +315,93 @@ def test_forcing_a_fetcher_skips_the_site_adapter(
     assert apis.github.requests == []
 
 
+def test_forcing_a_site_adapter_gets_the_page_from_it(client: TestClient, apis: Apis) -> None:
+    serve_repo(apis.github)
+
+    status, body = scrape(client, "https://github.com/octo/widget", fetcher="github", maxAge=0)
+
+    assert status == 200
+    assert body["data"]["siteAdapter"] == "github"
+
+
+def test_a_forced_site_adapter_that_fails_has_no_ladder_to_fall_back_to(
+    client: TestClient, apis: Apis, firecrawl: FakeFirecrawl
+) -> None:
+    url = "https://github.com/octo/widget"  # the fake API answers 503
+    apis.github.serve("/repos/octo/widget", FakeResponse(b"unavailable", 503))
+    firecrawl.serve(url, firecrawl_page("article.html", ARTICLE_MARKDOWN))
+
+    status, body = scrape(client, url, fetcher="github")
+
+    assert status == 502
+    assert [(a["fetcher"], a["reason"]) for a in body["attempts"]] == [("github", "http_503")]
+    assert firecrawl.scrapes == []
+
+
+def test_a_forced_site_adapter_refuses_a_url_it_does_not_handle(
+    client: TestClient, apis: Apis
+) -> None:
+    status, body = scrape(client, "https://example.org/article", fetcher="youtube")
+
+    assert status == 502
+    assert body["attempts"][0]["reason"] == "unhandled_url"
+    assert apis.youtube.requests == []
+
+
+def test_forcing_a_site_adapter_that_is_not_enabled_is_refused(
+    adapter_config: Config,
+) -> None:
+    adapter_config.adapters.enabled = ["github"]
+    client = TestClient(create_app(adapter_config))
+
+    status, body = scrape(client, "https://www.reddit.com/r/one/", fetcher="reddit")
+
+    assert status == 422
+    assert body["code"] == "UNKNOWN_FETCHER"
+
+
+def adapter_rates(client: TestClient) -> dict[str, dict[str, Any]]:
+    response = client.get("/health/adapters")
+    assert response.status_code == 200
+    return {r["adapter"]: r for r in response.json()["adapters"]}
+
+
+def test_each_site_adapters_attempts_and_successes_are_counted(
+    client: TestClient, apis: Apis, firecrawl: FakeFirecrawl
+) -> None:
+    serve_repo(apis.github)
+    apis.github.serve("/repos/octo/broken", FakeResponse(b"unavailable", 503))
+    firecrawl.serve("https://github.com/octo/broken", firecrawl_page("article.html", ARTICLE_MARKDOWN))
+    scrape(client, "https://github.com/octo/widget")  # github: accepted
+    scrape(client, "https://github.com/octo/broken")  # github: 503, then paid
+
+    seen = adapter_rates(client)
+
+    assert list(seen) == ["youtube", "reddit", "github"]
+    assert (seen["github"]["attempts"], seen["github"]["successes"]) == (2, 1)
+    assert seen["reddit"]["attempts"] == 0
+
+
+def test_a_page_the_adapters_api_says_does_not_exist_is_not_held_against_it(
+    client: TestClient,
+) -> None:
+    scrape(client, "https://github.com/octo/gone")  # the fake API answers 404
+
+    assert adapter_rates(client)["github"]["attempts"] == 0
+
+
+def test_a_site_adapter_skipped_for_a_cool_down_is_not_counted(
+    client: TestClient, apis: Apis
+) -> None:
+    apis.reddit.serve("/r/one.json?raw_json=1", FakeResponse(b"slow down", 429))
+    scrape(client, "https://www.reddit.com/r/one/")
+    scrape(client, "https://www.reddit.com/r/two/")  # reddit skipped: cooling down
+
+    reddit = adapter_rates(client)["reddit"]
+
+    assert (reddit["attempts"], reddit["successes"]) == (1, 0)
+
+
 def test_github_api_is_called_without_a_token_when_none_is_set(
     adapter_config: Config, apis: Apis
 ) -> None:

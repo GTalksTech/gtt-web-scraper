@@ -1,13 +1,20 @@
-"""Seam 3: the Incident report. Given Canary results and per-Fetcher success rates, the
+"""Seam 3: the Incident report. Given Canary results (pages, Site Adapter pages and
+searches) and the success rates of the Fetchers, Search Providers and Site Adapters, the
 health runner emits these Incidents with these fingerprints, and none for healthy runs.
 It also decides whether a new version may take traffic."""
 
 from __future__ import annotations
 
 from scraper.config import HealthConfig
-from scraper.health.canary import CanaryEntry, CanaryReport, CanaryResult
+from scraper.health.canary import (
+    CanaryEntry,
+    CanaryReport,
+    CanaryResult,
+    SearchCanary,
+    SearchCheck,
+)
 from scraper.health.incidents import Incident, incidents_for, judge_deploy
-from scraper.health.rates import FetcherRate
+from scraper.health.rates import SuccessRate
 
 HEALTH = HealthConfig(min_attempts=10, min_success_rate=0.5, widespread_fraction=0.5)
 
@@ -64,8 +71,8 @@ def rate(
     successes: int,
     unavailable: int = 0,
     last_unavailable: str | None = None,
-) -> FetcherRate:
-    return FetcherRate(fetcher, attempts, successes, unavailable, last_unavailable)
+) -> SuccessRate:
+    return SuccessRate("fetcher", fetcher, attempts, successes, unavailable, last_unavailable)
 
 
 HEALTHY_RATES = [rate("plain", 40, 31), rate("paid", 6, 6)]
@@ -189,7 +196,7 @@ def test_half_the_canary_set_failing_is_one_widespread_incident() -> None:
     incidents = incidents_for(report(results), HEALTHY_RATES, HEALTH)
 
     assert fingerprints(incidents) == ["canary_widespread"]
-    assert incidents[0].effect == "most pages can't be fetched (4 of 7 Canary pages failing)"
+    assert incidents[0].effect == "most pages can't be fetched (4 of 7 Canary checks failing)"
     assert len(incidents[0].evidence["failures"]) == 4
 
 
@@ -201,7 +208,7 @@ def test_a_service_that_does_not_answer_is_a_widespread_incident() -> None:
     incidents = incidents_for(report(results), HEALTHY_RATES, HEALTH)
 
     assert fingerprints(incidents) == ["canary_widespread"]
-    assert incidents[0].effect == "the service isn't answering (7 of 7 Canary pages failing)"
+    assert incidents[0].effect == "the service isn't answering (7 of 7 Canary checks failing)"
 
 
 def test_the_same_failure_on_another_day_has_the_same_fingerprint() -> None:
@@ -353,3 +360,211 @@ def test_every_rejected_deploy_shares_one_fingerprint() -> None:
     second = judge_deploy(report(healthy_results()), worse, "sha256:two")
 
     assert fingerprints(first.incidents) == fingerprints(second.incidents)
+
+
+# ── Search Providers and Site Adapters ─────────────────────────────────────
+
+PROVIDERS = ["tinyfish", "exa", "tavily", "duckduckgo"]
+QUERIES = [
+    SearchCanary("python sqlite3 module documentation", "docs.python.org"),
+    SearchCanary("git rebase documentation", "git-scm.com"),
+]
+ADAPTER_URL = "https://www.youtube.com/@RaspberryPi"
+
+
+def searched(
+    canary: SearchCanary, provider: str, outcome: str = "found", detail: str = ""
+) -> SearchCheck:
+    urls = [f"https://{canary.expect}/page"] if outcome == "found" else ["https://spam.example/"]
+    return SearchCheck(canary, provider, outcome, detail, urls)  # type: ignore[arg-type]
+
+
+def healthy_searches() -> list[SearchCheck]:
+    return [searched(q, p) for q in QUERIES for p in PROVIDERS]
+
+
+def with_searches(results: list[CanaryResult], searches: list[SearchCheck]) -> CanaryReport:
+    return CanaryReport(target="http://127.0.0.1:3002", results=results, searches=searches)
+
+
+def adapter_entry() -> CanaryEntry:
+    return CanaryEntry(url=ADAPTER_URL, expected="accepted", fetcher="youtube")
+
+
+def healthy_with_adapter() -> list[CanaryResult]:
+    return healthy_results() + [got(adapter_entry(), "accepted", sample="# Raspberry Pi")]
+
+
+def test_a_healthy_run_with_searches_and_adapters_emits_no_incidents() -> None:
+    rates = HEALTHY_RATES + [
+        SuccessRate("provider", "tinyfish", 30, 29),
+        SuccessRate("adapter", "github", 12, 12),
+    ]
+
+    incidents = incidents_for(with_searches(healthy_with_adapter(), healthy_searches()), rates, HEALTH)
+
+    assert incidents == []
+
+
+def test_a_search_provider_sliding_below_the_floor_raises_an_incident() -> None:
+    rates = [SuccessRate("provider", "exa", 20, 4)]
+
+    incidents = incidents_for(report(healthy_results()), rates, HEALTH)
+
+    assert fingerprints(incidents) == ["provider_degraded:exa"]
+    assert incidents[0].kind == "provider_degraded"
+    assert incidents[0].effect == "the exa Search Provider is failing (20% of 20 searches succeeded)"
+    assert incidents[0].evidence == {
+        "provider": "exa",
+        "attempts": 20,
+        "successes": 4,
+        "successRate": 0.2,
+        "minSuccessRate": 0.5,
+    }
+
+
+def test_a_site_adapter_sliding_below_the_floor_raises_an_incident() -> None:
+    rates = [SuccessRate("adapter", "reddit", 12, 3)]
+
+    incidents = incidents_for(report(healthy_results()), rates, HEALTH)
+
+    assert fingerprints(incidents) == ["adapter_degraded:reddit"]
+    assert incidents[0].kind == "adapter_degraded"
+    assert incidents[0].effect == "the reddit Site Adapter is failing (25% of 12 attempts succeeded)"
+    assert incidents[0].evidence["adapter"] == "reddit"
+
+
+def test_a_search_provider_or_adapter_with_too_few_attempts_emits_nothing() -> None:
+    rates = [SuccessRate("provider", "exa", 4, 0), SuccessRate("adapter", "reddit", 3, 0)]
+
+    assert incidents_for(report(healthy_results()), rates, HEALTH) == []
+
+
+def test_a_search_providers_quota_running_out_raises_an_incident() -> None:
+    rates = [SuccessRate("provider", "tavily", 8, 8, 2, "quota_exhausted")]
+
+    incidents = incidents_for(report(healthy_results()), rates, HEALTH)
+
+    assert fingerprints(incidents) == ["quota_exhausted:tavily"]
+    assert incidents[0].effect == "the tavily Search Provider's quota is used up, so searches skip it"
+    assert incidents[0].evidence["provider"] == "tavily"
+
+
+def test_a_search_provider_without_a_key_raises_nothing() -> None:
+    # Not every Provider needs a key set; one left out is a choice, not a breakage.
+    rates = [SuccessRate("provider", "tinyfish", 0, 0, 5, "not_configured")]
+
+    assert incidents_for(report(healthy_results()), rates, HEALTH) == []
+
+
+def test_a_site_adapters_canary_page_failing_raises_an_incident_for_the_adapter() -> None:
+    results = replace_result(
+        healthy_with_adapter(), ADAPTER_URL, got(adapter_entry(), "rejected", "http_404", 404)
+    )
+
+    incidents = incidents_for(report(results), HEALTHY_RATES, HEALTH)
+
+    assert fingerprints(incidents) == ["adapter_canary_failed:youtube"]
+    assert incidents[0].kind == "adapter_canary_failed"
+    assert incidents[0].effect == "the youtube Site Adapter can't get pages from www.youtube.com"
+    [failure] = incidents[0].evidence["failures"]
+    assert (failure["url"], failure["reason"]) == (ADAPTER_URL, "http_404")
+
+
+def test_a_site_adapter_failing_is_apart_from_a_page_on_the_same_site() -> None:
+    plain = CanaryEntry(url="https://www.youtube.com/about/", expected="accepted")
+    results = healthy_results() + [
+        got(adapter_entry(), "rejected", "fetch_error", None),
+        got(plain, "rejected", "challenge", 403),
+    ]
+
+    incidents = incidents_for(report(results), HEALTHY_RATES, HEALTH)
+
+    assert sorted(fingerprints(incidents)) == [
+        "adapter_canary_failed:youtube",
+        "canary_failed:www.youtube.com",
+    ]
+
+
+def test_one_providers_canary_searches_failing_raise_an_incident_for_it() -> None:
+    searches = [
+        searched(q, p, "missing", "no result from the site among 1") if p == "exa" else searched(q, p)
+        for q in QUERIES
+        for p in PROVIDERS
+    ]
+
+    incidents = incidents_for(with_searches(healthy_results(), searches), HEALTHY_RATES, HEALTH)
+
+    assert fingerprints(incidents) == ["search_canary_failed:exa"]
+    incident = incidents[0]
+    assert incident.kind == "search_canary_failed"
+    assert incident.effect == (
+        "searches through exa don't find what they should (2 of 2 Canary searches failing)"
+    )
+    assert [f["query"] for f in incident.evidence["searchFailures"]] == [q.query for q in QUERIES]
+    assert incident.evidence["searchFailures"][0]["results"] == ["https://spam.example/"]
+    assert "failures" not in incident.evidence
+
+
+def test_two_providers_failing_are_two_incidents() -> None:
+    searches = healthy_searches()
+    searches[0] = searched(QUERIES[0], "tinyfish", "failed", "tinyfish: unreachable")
+    searches[3] = searched(QUERIES[0], "duckduckgo", "failed", "duckduckgo: rate-limited")
+
+    incidents = incidents_for(with_searches(healthy_results(), searches), HEALTHY_RATES, HEALTH)
+
+    assert fingerprints(incidents) == [
+        "search_canary_failed:tinyfish",
+        "search_canary_failed:duckduckgo",
+    ]
+
+
+def test_every_canary_search_failing_is_one_search_down_incident() -> None:
+    searches = [searched(q, p, "failed", f"{p}: unreachable") for q in QUERIES for p in PROVIDERS]
+    results = healthy_results() * 2  # enough pages passing that it isn't widespread
+
+    incidents = incidents_for(with_searches(results, searches), HEALTHY_RATES, HEALTH)
+
+    assert fingerprints(incidents) == ["search_down"]
+    assert incidents[0].effect == "search is down (tinyfish + exa + tavily + duckduckgo failing)"
+    assert len(incidents[0].evidence["searchFailures"]) == 8
+
+
+def test_a_service_that_answers_nothing_is_one_widespread_incident() -> None:
+    results = [got(r.entry, "error", "service_error", None) for r in healthy_results()]
+    searches = [searched(q, p, "error", "refused") for q in QUERIES for p in PROVIDERS]
+
+    incidents = incidents_for(with_searches(results, searches), HEALTHY_RATES, HEALTH)
+
+    assert fingerprints(incidents) == ["canary_widespread"]
+    assert incidents[0].effect == "the service isn't answering (15 of 15 Canary checks failing)"
+
+
+def test_a_canary_search_failing_differently_another_day_has_the_same_fingerprint() -> None:
+    monday = healthy_searches()
+    monday[1] = searched(QUERIES[0], "exa", "missing")
+    tuesday = healthy_searches()
+    tuesday[5] = searched(QUERIES[1], "exa", "failed", "exa: quota exhausted")
+
+    assert fingerprints(
+        incidents_for(with_searches(healthy_results(), monday), HEALTHY_RATES, HEALTH)
+    ) == fingerprints(
+        incidents_for(with_searches(healthy_results(), tuesday), HEALTHY_RATES, HEALTH)
+    )
+
+
+def test_a_candidate_whose_searches_regress_is_kept_out() -> None:
+    worse = healthy_searches()
+    worse[2] = searched(QUERIES[0], "tavily", "failed", "tavily: answered HTTP 500")
+
+    decision = judge_deploy(
+        with_searches(healthy_results(), healthy_searches()),
+        with_searches(healthy_results(), worse),
+        NEW_IMAGE,
+    )
+
+    assert not decision.promote
+    evidence = decision.incidents[0].evidence
+    assert (evidence["candidatePassed"], evidence["livePassed"], evidence["total"]) == (14, 15, 15)
+    [regression] = evidence["regressions"]
+    assert (regression["provider"], regression["query"]) == ("tavily", QUERIES[0].query)

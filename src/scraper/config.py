@@ -105,14 +105,15 @@ class SearchConfig:
 
 @dataclass
 class HealthConfig:
-    # Rolling success rates per Fetcher are counted over this window.
+    # Rolling success rates per Fetcher, Search Provider and Site Adapter are counted
+    # over this window.
     window_s: float = 86400.0
-    # A Fetcher with fewer attempts than this in the window isn't judged.
+    # One with fewer attempts than this in the window isn't judged.
     min_attempts: int = 10
-    # A Fetcher whose share of successful attempts falls below this raises an Incident.
+    # One whose share of successful attempts falls below this raises an Incident.
     min_success_rate: float = 0.5
-    # When at least this share of the Canary Set fails, it is one widespread Incident
-    # rather than one per Site.
+    # When at least this share of the Canary Set's checks fail, it is one widespread
+    # Incident rather than one per Site, Site Adapter or Search Provider.
     widespread_fraction: float = 0.5
 
 

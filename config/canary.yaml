@@ -1,15 +1,20 @@
 # The Canary Set: trusted, content-rich, current URLs with the Verdict the service must
 # give each, run daily on pi5 and against every new version before it takes traffic
-# (python -m scraper.health; deploy/pi5/gtt-canary.sh and gtt-up.sh). A page that
-# doesn't get its expected Verdict raises an Incident.
+# (python -m scraper.health; deploy/pi5/gtt-canary.sh and gtt-up.sh), plus one page per
+# Site Adapter and a few search queries with a site their results must include. A page
+# that doesn't get its expected Verdict, or a search that doesn't find its site, raises
+# an Incident.
 #
 # Each entry:
 #   url:       the page
 #   expected:  accepted (real content), suspect, or rejected (known-bad: never content)
 #   reason:    optional; the Verdict reason expected too (e.g. http_404)
-#   fetcher:   optional; the Fetcher to force (default plain, the plain download), or
-#              "auto" for none. Keep it plain: a run must never spend the Paid
-#              Fetcher's quota, and a known-bad page would otherwise escalate to it.
+#   fetcher:   optional; the Fetcher or Site Adapter to force (default plain, the
+#              plain download), or "auto" for none. Keep it plain or a Site Adapter:
+#              a run must never spend the Paid Fetcher's quota, and a known-bad page
+#              would otherwise escalate to it.
+#
+# Search entries (query/expect) are described with them, at the end.
 #
 # Rules (ADR 0002): the agent may add entries. Removing one, or loosening it (accepted
 # to suspect, dropping a reason), is excluded from auto-merge and needs Garrett's
@@ -96,3 +101,33 @@
   expected: rejected
 - url: https://www.figma.com/files/recent
   expected: rejected
+
+# ── Site Adapters: one page each, forced through the adapter ───────────────
+# Forced, so a failing adapter can't hide behind the Ladder (and its Paid Fetcher).
+# Added 2026-11-27. Checked then from the MacBook: github and youtube accepted;
+# reddit answered 403 there, so its first runs on pi5 will say whether the Reddit
+# adapter works from the home connection.
+- url: https://github.com/torvalds/linux
+  expected: accepted
+  fetcher: github
+- url: https://www.youtube.com/@RaspberryPi
+  expected: accepted
+  fetcher: youtube
+- url: https://www.reddit.com/r/raspberry_pi/
+  expected: accepted
+  fetcher: reddit
+
+# ── searches ───────────────────────────────────────────────────────────────
+# Each search entry:
+#   query:     what to search for
+#   expect:    a domain at least one result must come from (subdomains count)
+#   provider:  optional; the one Search Provider to ask. Omit it (the usual) and the
+#              query is asked of every Search Provider in config/scraper.yaml, one at
+#              a time and live, so a failing Provider can't hide behind the next.
+# Pick queries whose top results have been the same site for years.
+- query: python sqlite3 module documentation
+  expect: docs.python.org
+- query: Raspberry Pi single-board computer wikipedia
+  expect: wikipedia.org
+- query: git rebase documentation
+  expect: git-scm.com

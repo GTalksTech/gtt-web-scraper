@@ -99,17 +99,21 @@ search:
   duckduckgo_url: https://html.duckduckgo.com
 
 health:
-  # Rolling success rates per Fetcher, counted over this window (24 hours). Attempts
-  # skipped for a cool-down aren't counted; ones refused because the Fetcher is
-  # unavailable (quota exhausted) are counted apart and raise their own Incident.
+  # Rolling success rates per Fetcher, Search Provider and Site Adapter, counted over
+  # this window (24 hours); see them at /health/fetchers, /health/providers and
+  # /health/adapters. Attempts skipped for a cool-down, and searches served from the
+  # cache, aren't counted; ones refused because a Fetcher or Provider is unavailable
+  # (quota exhausted, or a Provider's key not set) are counted apart, and a quota
+  # running out raises its own Incident.
   window_s: 86400
-  # A Fetcher with fewer attempts than this in the window isn't judged.
+  # A Fetcher, Provider or adapter with fewer attempts than this in the window isn't judged.
   min_attempts: 10
-  # A Fetcher whose share of successful attempts falls below this raises an Incident.
-  # The plain download is rejected on hard sites as a matter of course, so this is a
-  # floor for a quiet slide, not a target. Lowering it loosens a check and needs
-  # Garrett's approval (ADR 0002).
+  # One whose share of successful attempts falls below this raises an Incident. The
+  # plain download is rejected on hard sites as a matter of course, and a Provider that
+  # finds nothing counts as failing, so this is a floor for a quiet slide, not a
+  # target. Lowering it loosens a check and needs Garrett's approval (ADR 0002).
   min_success_rate: 0.5
-  # When at least this share of the Canary Set fails at once, it's one widespread
-  # Incident instead of one per site. The Canary Set itself is config/canary.yaml.
+  # When at least this share of the Canary Set's checks (pages and searches) fails at
+  # once, it's one widespread Incident instead of one per site, Site Adapter or Search
+  # Provider. The Canary Set itself is config/canary.yaml.
   widespread_fraction: 0.5

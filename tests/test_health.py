@@ -1,7 +1,8 @@
-"""Seam 1: health tracking as seen from outside. Rolling success rates per Fetcher,
-read from the service's /health/fetchers endpoint after real requests, and the Canary
-runner asking a running service for each Canary URL, against the local fake web and
-fake Firecrawl.
+"""Seam 1: health tracking as seen from outside. Rolling success rates per Fetcher and
+Search Provider, read from the service's /health endpoints after real requests, and the
+Canary runner asking a running service for each Canary URL and search, against the
+local fake web, fake Firecrawl and fake Search Providers. (Site Adapters' rates are in
+test_site_adapters.py, beside their fake APIs.)
 """
 
 from __future__ import annotations
@@ -14,11 +15,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 from scraper.api import create_app
-from scraper.config import CANARY_SET_FILE, DEFAULT_PATH, Config
+from scraper.config import CANARY_SET_FILE, DEFAULT_PATH, Config, load_config
 from scraper.health.__main__ import deploy_check, health_run, write_incidents
-from scraper.health.canary import CanaryEntry, load_canary_set, run_canary
+from scraper.health.canary import CanaryEntry, CanarySet, SearchCanary, load_canary_set, run_canary
 
 from .fakefirecrawl import FakeFirecrawl, firecrawl_page
+from .fakesearch import PROVIDERS, FakeSearchProviders, Hit, hits
 from .fakeweb import FakeResponse, FakeWeb, page
 from .test_cache import FakeClock
 from .test_paid_fetcher import ARTICLE_MARKDOWN
@@ -174,6 +176,99 @@ def test_rates_survive_a_restart(config: Config, client: TestClient, web: FakeWe
     assert rates(restarted)["plain"]["attempts"] == 1
 
 
+# ── rolling success rates per Search Provider ──────────────────────────────
+
+
+def provider_rates(client: TestClient) -> dict[str, dict[str, Any]]:
+    response = client.get("/health/providers")
+    assert response.status_code == 200
+    return {r["provider"]: r for r in response.json()["providers"]}
+
+
+def search(client: TestClient, query: str, **extra: Any) -> Any:
+    return client.post("/v1/search", json={"query": query, **extra})
+
+
+def test_each_search_providers_attempts_and_successes_are_counted(
+    client: TestClient, providers: FakeSearchProviders
+) -> None:
+    providers.fail("tinyfish")
+    search(client, "raspberry pi 5")  # tinyfish fails, exa answers
+    providers.answer("exa", [])
+    search(client, "pi zero")  # tinyfish fails, exa finds nothing, tavily answers
+
+    seen = provider_rates(client)
+
+    assert list(seen) == ["tinyfish", "exa", "tavily", "duckduckgo"]
+    assert (seen["tinyfish"]["attempts"], seen["tinyfish"]["successes"]) == (2, 0)
+    assert (seen["exa"]["attempts"], seen["exa"]["successes"]) == (2, 1)
+    assert (seen["tavily"]["attempts"], seen["tavily"]["successes"]) == (1, 1)
+    assert seen["duckduckgo"]["attempts"] == 0
+
+
+def test_a_search_providers_exhausted_quota_is_counted_apart(
+    client: TestClient, providers: FakeSearchProviders
+) -> None:
+    providers.run_out("tinyfish")
+    search(client, "raspberry pi 5")
+
+    tinyfish = provider_rates(client)["tinyfish"]
+
+    assert (tinyfish["attempts"], tinyfish["unavailable"]) == (0, 1)
+    assert tinyfish["lastUnavailable"] == "quota_exhausted"
+
+
+def test_a_search_provider_without_a_key_is_unavailable_not_failing(
+    config: Config, clock: FakeClock
+) -> None:
+    config.search.exa_api_key = None
+    config.search.providers = ["exa", "tavily"]
+    client = TestClient(create_app(config, clock=clock))
+    search(client, "raspberry pi 5")
+
+    exa = provider_rates(client)["exa"]
+
+    assert (exa["attempts"], exa["lastUnavailable"]) == (0, "not_configured")
+
+
+def test_a_search_served_from_the_cache_is_not_an_attempt(client: TestClient) -> None:
+    search(client, "raspberry pi 5")
+    search(client, "raspberry pi 5")
+
+    assert provider_rates(client)["tinyfish"]["attempts"] == 1
+
+
+def test_a_search_can_be_forced_to_one_provider_with_a_live_search(
+    client: TestClient, providers: FakeSearchProviders
+) -> None:
+    search(client, "raspberry pi 5")  # tinyfish answers, and it's cached
+
+    response = search(client, "raspberry pi 5", provider="tavily")
+
+    assert response.status_code == 200
+    assert response.json()["provider"] == "tavily"
+    assert providers.calls() == ["tinyfish", "tavily"]
+    assert provider_rates(client)["tavily"]["successes"] == 1
+
+
+def test_a_forced_provider_that_fails_does_not_pass_the_query_on(
+    client: TestClient, providers: FakeSearchProviders
+) -> None:
+    providers.fail("exa")
+
+    response = search(client, "raspberry pi 5", provider="exa")
+
+    assert response.status_code == 502
+    assert providers.calls() == ["exa"]
+
+
+def test_forcing_an_unknown_provider_is_refused(client: TestClient) -> None:
+    response = search(client, "raspberry pi 5", provider="google")
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "UNKNOWN_PROVIDER"
+
+
 # ── the Canary runner ──────────────────────────────────────────────────────
 
 
@@ -184,7 +279,7 @@ def test_the_canary_set_is_asked_of_the_service_with_a_live_fetch(
     scrape(client, url)  # cached: the Canary must not be fooled by it
     entries = [CanaryEntry(url=url, expected="accepted")]
 
-    report = run_canary(entries, ClientService(client))
+    report = run_canary(CanarySet(entries), ClientService(client))
 
     assert web.hits("/article") == 2
     [result] = report.results
@@ -199,7 +294,7 @@ def test_a_canary_known_bad_page_passes_when_rejected_for_the_expected_reason(
     url = web.serve("/missing", page("soft_404.html", 404))
     entries = [CanaryEntry(url=url, expected="rejected", reason="http_404")]
 
-    report = run_canary(entries, ClientService(client))
+    report = run_canary(CanarySet(entries), ClientService(client))
 
     [result] = report.results
     assert result.passed
@@ -214,7 +309,7 @@ def test_a_canary_page_that_is_blocked_fails_with_the_evidence(
     url = web.serve("/news", page("cf_challenge.html", 403, CF_HEADERS))
     entries = [CanaryEntry(url=url, expected="accepted")]
 
-    report = run_canary(entries, ClientService(client))
+    report = run_canary(CanarySet(entries), ClientService(client))
 
     [failure] = report.failures
     assert (failure.verdict, failure.reason, failure.fetcher) == ("rejected", "challenge", "plain")
@@ -228,11 +323,84 @@ def test_a_service_that_refuses_the_request_is_a_failed_canary(
     url = web.serve("/article", page("article.html"))
     entries = [CanaryEntry(url=url, expected="accepted", fetcher="no-such-fetcher")]
 
-    [result] = run_canary(entries, ClientService(client)).results
+    [result] = run_canary(CanarySet(entries), ClientService(client)).results
 
     assert not result.passed
     assert (result.verdict, result.reason) == ("error", "service_error")
     assert "HTTP 422" in result.detail
+
+
+DOCS = Hit("sqlite3 — DB-API 2.0", "https://docs.python.org/3/library/sqlite3.html", "…")
+SQLITE = SearchCanary(query="python sqlite3 module", expect="python.org")
+
+
+def test_a_canary_search_is_asked_of_every_provider_in_turn_live(
+    client: TestClient, providers: FakeSearchProviders
+) -> None:
+    for name in PROVIDERS:
+        providers.answer(name, [DOCS])
+    search(client, SQLITE.query, limit=10)  # cached: the Canary must not be fooled by it
+
+    report = run_canary(CanarySet(searches=[SQLITE]), ClientService(client))
+
+    assert [(s.provider, s.passed) for s in report.searches] == [(p, True) for p in PROVIDERS]
+    assert [len(providers.queries[p]) for p in PROVIDERS] == [2, 1, 1, 1]
+
+
+def test_a_canary_search_without_the_expected_site_fails_with_the_results(
+    client: TestClient, providers: FakeSearchProviders
+) -> None:
+    for name in PROVIDERS:
+        providers.answer(name, [DOCS])
+    providers.answer("exa", hits("exa"))
+
+    report = run_canary(CanarySet(searches=[SQLITE]), ClientService(client))
+
+    [failure] = report.search_failures
+    assert (failure.provider, failure.outcome) == ("exa", "missing")
+    assert failure.urls == [h.url for h in hits("exa")]
+
+
+def test_a_canary_search_through_a_failing_provider_fails_with_its_error(
+    client: TestClient, providers: FakeSearchProviders
+) -> None:
+    for name in PROVIDERS:
+        providers.answer(name, [DOCS])
+    providers.run_out("tavily")
+
+    report = run_canary(CanarySet(searches=[SQLITE]), ClientService(client))
+
+    [failure] = report.search_failures
+    assert (failure.provider, failure.outcome) == ("tavily", "failed")
+    assert "quota exhausted" in failure.detail
+
+
+def test_a_canary_page_forced_through_a_site_adapter_is_judged_on_the_adapter_alone(
+    config: Config, clock: FakeClock, web: FakeWeb, firecrawl: FakeFirecrawl
+) -> None:
+    # The adapter's API is down; the Ladder would have got the page, hiding that.
+    config.adapters.github_api_url = web.url("")
+    client = TestClient(create_app(config, clock=clock))
+    url = "https://github.com/octo/widget"
+    firecrawl.serve(url, firecrawl_page("article.html", ARTICLE_MARKDOWN))
+    entries = [CanaryEntry(url=url, expected="accepted", fetcher="github")]
+
+    [failure] = run_canary(CanarySet(entries), ClientService(client)).failures
+
+    assert (failure.verdict, failure.fetcher, failure.reason) == ("rejected", "github", "http_404")
+    assert firecrawl.scrapes == []
+
+
+def test_a_health_run_reads_every_kind_of_success_rate(
+    client: TestClient, providers: FakeSearchProviders
+) -> None:
+    providers.fail("tinyfish")
+    for i in range(10):
+        search(client, f"query {i}")
+
+    incidents = health_run(CanarySet(), ClientService(client), Config().health)
+
+    assert [i.fingerprint for i in incidents] == ["provider_degraded:tinyfish"]
 
 
 def test_a_health_run_emits_incidents_from_the_canary_set_and_the_rates(
@@ -246,7 +414,7 @@ def test_a_health_run_emits_incidents_from_the_canary_set_and_the_rates(
         CanaryEntry(url=web.serve("/more", page("article.html")), expected="accepted"),
     ]
 
-    incidents = health_run(entries, ClientService(client), Config().health)
+    incidents = health_run(CanarySet(entries), ClientService(client), Config().health)
 
     assert [i.fingerprint for i in incidents] == ["canary_failed:localhost"]
 
@@ -254,7 +422,7 @@ def test_a_health_run_emits_incidents_from_the_canary_set_and_the_rates(
 def test_a_healthy_health_run_emits_nothing(client: TestClient, web: FakeWeb) -> None:
     entries = [CanaryEntry(url=web.serve("/article", page("article.html")), expected="accepted")]
 
-    assert health_run(entries, ClientService(client), Config().health) == []
+    assert health_run(CanarySet(entries), ClientService(client), Config().health) == []
 
 
 # ── the deploy check ───────────────────────────────────────────────────────
@@ -270,7 +438,7 @@ def test_a_page_the_candidate_failed_once_is_checked_again_before_judging(
     entries = [CanaryEntry(url=url, expected="accepted")]
     service = ClientService(client)
 
-    decision = deploy_check(entries, service, service, "sha256:new", wait_s=0, recheck_pause_s=0)
+    decision = deploy_check(CanarySet(entries), service, service, "sha256:new", wait_s=0, recheck_pause_s=0)
 
     assert decision.promote
     assert web.hits("/flaky") == 3
@@ -281,7 +449,7 @@ def test_a_page_the_candidate_keeps_failing_keeps_it_out(client: TestClient, web
     entries = [CanaryEntry(url=url, expected="accepted")]
     service = ClientService(client)
 
-    decision = deploy_check(entries, service, service, "sha256:new", wait_s=0, recheck_pause_s=0)
+    decision = deploy_check(CanarySet(entries), service, service, "sha256:new", wait_s=0, recheck_pause_s=0)
 
     assert not decision.promote
     assert [i.fingerprint for i in decision.incidents] == ["deploy_rejected"]
@@ -290,16 +458,34 @@ def test_a_page_the_candidate_keeps_failing_keeps_it_out(client: TestClient, web
 # ── the seeded Canary Set ──────────────────────────────────────────────────
 
 
-def test_the_seeded_canary_set_has_20_to_30_entries_with_some_known_bad_pages() -> None:
-    entries = load_canary_set(DEFAULT_PATH.parent / CANARY_SET_FILE)
+def test_the_seeded_canary_set_has_20_to_30_pages_with_some_known_bad_ones() -> None:
+    pages = load_canary_set(DEFAULT_PATH.parent / CANARY_SET_FILE).pages
+    plain = [e for e in pages if e.fetcher == "plain"]
 
-    assert 20 <= len(entries) <= 30
-    assert sum(e.expected == "rejected" for e in entries) >= 3
+    assert 20 <= len(plain) <= 30
+    assert sum(e.expected == "rejected" for e in plain) >= 3
     # Some known-bad pages come with a 200, so only the Content Gate can catch them.
-    assert any(e.expected == "rejected" and e.reason != "http_404" for e in entries)
-    assert sum(e.expected == "accepted" for e in entries) >= 15
-    # Never through the Paid Fetcher: a daily run must not spend its quota.
-    assert all(e.fetcher == "plain" for e in entries)
+    assert any(e.expected == "rejected" and e.reason != "http_404" for e in plain)
+    assert sum(e.expected == "accepted" for e in plain) >= 15
+
+
+def test_the_seeded_canary_set_checks_every_site_adapter_once() -> None:
+    pages = load_canary_set(DEFAULT_PATH.parent / CANARY_SET_FILE).pages
+    adapters = load_config().adapters.enabled
+
+    forced = sorted(e.fetcher for e in pages if e.fetcher != "plain")
+
+    assert forced == sorted(adapters)
+    # Never through the Paid Fetcher (or the Ladder that ends in it): a daily run must
+    # not spend its quota.
+    assert all(e.fetcher in ["plain", *adapters] for e in pages)
+
+
+def test_the_seeded_canary_set_has_searches_asked_of_every_provider() -> None:
+    searches = load_canary_set(DEFAULT_PATH.parent / CANARY_SET_FILE).searches
+
+    assert len(searches) >= 2
+    assert all(s.provider is None for s in searches)
 
 
 @pytest.mark.parametrize(
@@ -312,6 +498,13 @@ def test_the_seeded_canary_set_has_20_to_30_entries_with_some_known_bad_pages() 
             "- {url: 'https://a.example/', expected: accepted}\n"
             "- {url: 'https://a.example/', expected: accepted}\n",
             "listed twice",
+        ),
+        ("- query: raspberry pi\n", "a query and a domain"),
+        ("- query: raspberry pi\n  expect: https://raspberrypi.com/\n", "must be a domain"),
+        (
+            "- {query: raspberry pi, expect: raspberrypi.com}\n"
+            "- {query: raspberry pi, expect: wikipedia.org}\n",
+            "searches listed twice",
         ),
     ],
 )
@@ -329,7 +522,7 @@ def test_incidents_are_written_one_json_object_per_line(
     bad = web.serve("/news", page("cf_challenge.html", 403, CF_HEADERS))
     entries = [CanaryEntry(url=bad, expected="accepted")]
 
-    write_incidents(health_run(entries, ClientService(client), Config().health))
+    write_incidents(health_run(CanarySet(entries), ClientService(client), Config().health))
 
     [line] = capsys.readouterr().out.splitlines()
     assert json.loads(line)["fingerprint"] == "canary_failed:127.0.0.1"

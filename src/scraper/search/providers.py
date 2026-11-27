@@ -16,6 +16,8 @@ from ddgs.engines.duckduckgo import Duckduckgo
 from ddgs.exceptions import DDGSException
 
 from ..config import SearchConfig
+# The same reason a Fetcher gives, so one Incident kind covers both.
+from ..fetchers import QUOTA_EXHAUSTED
 
 
 @dataclass(frozen=True)
@@ -30,8 +32,18 @@ class SearchResult:
     published: str | None = None
 
 
+# Why a Provider gave nothing, as its success rate records it. A Provider whose quota
+# is used up, or whose key isn't set, is unavailable rather than failing.
+PROVIDER_ERROR = "provider_error"
+NOT_CONFIGURED = "not_configured"
+
+
 class ProviderError(Exception):
     """The Provider gave no results to use. The message is for the Caller."""
+
+    def __init__(self, message: str, reason: str = PROVIDER_ERROR) -> None:
+        super().__init__(message)
+        self.reason = reason
 
 
 class SearchProvider(Protocol):
@@ -55,7 +67,7 @@ class _HttpProvider:
 
     def _key(self) -> str:
         if not self._api_key:
-            raise ProviderError(f"not configured: {self.key_env} is not set")
+            raise ProviderError(f"not configured: {self.key_env} is not set", NOT_CONFIGURED)
         return self._api_key
 
     def _call(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
@@ -70,7 +82,9 @@ class _HttpProvider:
             raise ProviderError(f"unreachable: {exc}") from exc
         status = response.status_code
         if status in self.quota_statuses:
-            raise ProviderError(f"quota exhausted or rate-limited (HTTP {status})")
+            raise ProviderError(
+                f"quota exhausted or rate-limited (HTTP {status})", QUOTA_EXHAUSTED
+            )
         if status != 200:
             raise ProviderError(f"answered HTTP {status}: {response.text[:200]}")
         try:
