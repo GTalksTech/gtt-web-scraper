@@ -1,0 +1,22 @@
+# gtt-web-scraper runtime config. Secrets never go here; they live in the untracked .env file.
+#
+# Loosening a Content Gate threshold (lower minimums, fewer markers) needs Garrett's approval
+# and is excluded from auto-merge (ADR 0002).
+
+ladder:
+  # Fetchers in the order a request climbs them, cheapest first.
+  - plain
+
+plain:
+  # Browser whose network signature (TLS, HTTP/2, headers) the plain download imitates.
+  impersonate: chrome
+  timeout_s: 20
+
+gate:
+  # Extracted text shorter than this is not real content (rejected).
+  min_chars: 200
+  # Extracted text shorter than this passes but is thin enough to doubt (suspect).
+  accepted_chars: 1000
+  # Non-interactive challenges are re-fetched this many times, this far apart, before giving up.
+  challenge_poll_attempts: 3
+  challenge_poll_interval_s: 3.0

@@ -1,0 +1,108 @@
+# Seam 2: the Content Gate corpus. Real pages captured in the wild, each with the Verdict
+# the Gate must give it. `reason` is checked when present.
+#
+# Rules (ADR 0002): add an entry for every page the Gate misjudged. Removing or relabelling
+# an entry is excluded from auto-merge and needs Garrett's approval.
+#
+# Capturing: fetch from the residential host, gzip the raw body into pages/<name>.html.gz,
+# keep only the headers the Gate reads, and never commit pages that embed the home
+# connection's IP address or location (many shop homepages do).
+#
+# Licences: Wikipedia (CC BY-SA 4.0), Python docs (PSF licence) and MDN (CC BY-SA 2.5)
+# pages are kept whole; the rest are block, error and shell pages from their sites.
+
+- name: wikipedia_raspberry_pi
+  url: https://en.wikipedia.org/wiki/Raspberry_Pi
+  captured: 2026-11-27
+  status: 200
+  headers: {"content-type": "text/html; charset=UTF-8"}
+  expected: accepted
+
+- name: python_docs_sqlite3
+  url: https://docs.python.org/3/library/sqlite3.html
+  captured: 2026-11-27
+  status: 200
+  headers: {"server": "nginx", "content-type": "text/html"}
+  expected: accepted
+
+- name: mdn_404_article
+  # A real article whose title starts "404 Not Found": not a soft 404.
+  url: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/404
+  captured: 2026-11-27
+  status: 200
+  headers: {"content-type": "text/html", "server": "Google Frontend"}
+  expected: accepted
+
+- name: github_404
+  url: https://github.com/GTalksTech/definitely-not-a-repo-xyz
+  captured: 2026-11-27
+  status: 404
+  headers: {"content-type": "text/html; charset=utf-8", "server": "github.com"}
+  expected: rejected
+  reason: http_404
+
+- name: medium_404
+  # Carries Cloudflare's bot-management script on an ordinary page: not a challenge.
+  url: https://medium.com/this-page-does-not-exist-xyz
+  captured: 2026-11-27
+  status: 404
+  headers: {"content-type": "text/html; charset=utf-8", "server": "cloudflare"}
+  expected: rejected
+  reason: http_404
+
+- name: bbc_404
+  url: https://www.bbc.co.uk/news/articles/doesnotexist123
+  captured: 2026-11-27
+  status: 404
+  headers: {"content-type": "text/html; charset=utf-8", "server": "BBC-GTM"}
+  expected: rejected
+  reason: http_404
+
+- name: crunchbase_cloudflare_challenge
+  # Managed challenge titled "One moment, please…", not "Just a moment".
+  url: https://www.crunchbase.com/
+  captured: 2026-11-27
+  status: 403
+  headers: {"content-type": "text/html; charset=UTF-8", "cf-mitigated": "challenge", "server": "cloudflare"}
+  expected: rejected
+  reason: challenge
+
+- name: leboncoin_datadome
+  url: https://www.leboncoin.fr/
+  captured: 2026-11-27
+  status: 403
+  headers: {"content-type": "text/html;charset=utf-8", "x-datadome": "protected"}
+  expected: rejected
+  reason: interactive_challenge
+
+- name: g2_datadome_behind_cloudflare
+  url: https://www.g2.com/
+  captured: 2026-11-27
+  status: 403
+  headers: {"content-type": "text/html;charset=utf-8", "x-datadome": "protected", "server": "cloudflare"}
+  expected: rejected
+  reason: interactive_challenge
+
+- name: wayfair_perimeterx
+  # PerimeterX "Press & Hold" served with a 429.
+  url: https://www.wayfair.com/
+  captured: 2026-11-27
+  status: 429
+  headers: {"content-type": "text/html", "server": "cloudflare"}
+  expected: rejected
+  reason: interactive_challenge
+
+- name: notion_shell
+  url: https://www.notion.so/this-does-not-exist
+  captured: 2026-11-27
+  status: 200
+  headers: {"content-type": "text/html; charset=utf-8", "server": "cloudflare"}
+  expected: rejected
+  reason: empty_shell
+
+- name: x_home_shell
+  url: https://x.com/home
+  captured: 2026-11-27
+  status: 200
+  headers: {"content-type": "text/html; charset=UTF-8", "server": "cloudflare envoy"}
+  expected: rejected
