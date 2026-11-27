@@ -26,6 +26,10 @@
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
+# However the pass ends, send waiting Incidents on to GitHub (gtt-report.sh).
+# This is also the retry for any that couldn't be sent last time.
+trap './gtt-report.sh || true' EXIT
+
 CONTAINER=gtt-web-scraper
 CANDIDATE_TAG=gtt-web-scraper:candidate   # compose.yml's candidate image
 REJECTED_TAG=gtt-web-scraper:kept-out     # the last image the Canary Set kept out

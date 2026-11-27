@@ -106,11 +106,11 @@ case "$*" in
   "tag "*" $MAIN") echo "$2" > "$FAKE/tagged" ;;
   "exec gtt-web-scraper-candidate python -m scraper.health deploy"*)
     rc=$(cat "$FAKE/canary_rc" 2>/dev/null || echo 0)
-    [[ $rc == 3 ]] && echo "{\"fingerprint\": \"deploy_rejected\", \"kind\": \"deploy_rejected\"}"
+    [[ $rc == 3 ]] && echo "{\"fingerprint\": \"deploy_rejected\", \"kind\": \"deploy_rejected\", \"effect\": \"a new version was kept out\"}"
     exit "$rc" ;;
   "exec gtt-web-scraper python -m scraper.health canary")
     [[ -e "$FAKE/live_down" ]] && exit 1
-    [[ -e "$FAKE/canary_incident" ]] && echo "{\"fingerprint\": \"canary_failed:lwn.net\", \"kind\": \"canary_failed\"}"
+    [[ -e "$FAKE/canary_incident" ]] && echo "{\"fingerprint\": \"canary_failed:lwn.net\", \"kind\": \"canary_failed\", \"effect\": \"pages from lwn.net fail\"}"
     true ;;
   "inspect --format {{.Image}}"*) cat "$FAKE/running" 2>/dev/null || exit 1 ;;
   "inspect --format"*Health*) cat "$FAKE/health" 2>/dev/null; true ;;
@@ -124,10 +124,29 @@ fake systemctl 'printf "%s\n" "$*" >> "$FAKE/systemctl.log"
 [[ "$*" == "is-active"* ]] && exit 3
 [[ "$*" == "enable --now"* && -e "$FAKE/start_fails" ]] && exit 1; true'
 
+# curl: GitHub's dispatch endpoint. Logs the Authorization header it was handed
+# (from a header file) and the request body, one line each per call, and
+# answers with the next status in $FAKE/http (204 once that runs out; 000 means
+# GitHub wasn't reached).
+fake curl 'auth="" prev=""
+for a in "$@"; do
+  [[ $prev == -H && $a == @* ]] && auth="$(grep -i "^Authorization:" "${a#@}")"
+  prev="$a"
+done
+printf "%s\n" "$*" >> "$FAKE/curl.args"
+printf "%s\n" "$auth" >> "$FAKE/curl.auth"
+tr -d "\n" >> "$FAKE/curl.body"; echo >> "$FAKE/curl.body"
+code=204
+if [[ -s "$FAKE/http" ]]; then code=$(head -n1 "$FAKE/http"); tail -n +2 "$FAKE/http" > "$FAKE/http.next"; mv "$FAKE/http.next" "$FAKE/http"; fi
+printf "%s" "$code"
+[[ $code == 000 ]] && exit 7; true'
+
 reset_fakes() {
-  rm -f "$FAKE"/* "$PI/incidents.jsonl" "$PI/.rejected-images" "$PI/.live-image"
+  rm -f "$FAKE"/* "$PI/incidents.jsonl" "$PI/.rejected-images" "$PI/.live-image" \
+    "$PI/incidents-sent.jsonl" "$PI/incidents-unsendable.jsonl" "$PI/.incidents-sending"
   echo 100.64.0.5 > "$FAKE/ip"; echo sha256:old > "$FAKE/running"; echo sha256:old > "$FAKE/tagged"
   echo sha256:new > "$FAKE/remote"
+  printf "FIRECRAWL_API_KEY='fc-test'\n" > "$PI/.env"
 }
 up() { PATH="$BIN:$PATH" TAILNET_WAIT_S="${WAIT:-0}" bash "$PI/gtt-up.sh" > "$FAKE/out.log" 2>&1; }
 canary() { PATH="$BIN:$PATH" bash "$PI/gtt-canary.sh" > "$FAKE/out.log" 2>&1; }
@@ -258,6 +277,89 @@ check "  that the service isn't answering" \
   test "$(jq -r '"\(.fingerprint) \(.effect)"' "$PI/incidents.jsonl")" \
        = "canary_widespread the service isn't answering (the Canary Set couldn't run)"
 
+# ── gtt-report.sh: Incidents go to GitHub ─────────────────────────────────
+echo "gtt-report.sh"
+with_token() { printf "GITHUB_DISPATCH_TOKEN='github_pat_test'\n" >> "$PI/.env"; }
+report() { PATH="$BIN:$PATH" bash "$PI/gtt-report.sh" > "$FAKE/report.log" 2>&1; }
+calls() { if [[ -f "$FAKE/curl.body" ]]; then wc -l < "$FAKE/curl.body" | tr -d ' '; else echo 0; fi; }
+sent() { if [[ -f "$PI/incidents-sent.jsonl" ]]; then wc -l < "$PI/incidents-sent.jsonl" | tr -d ' '; else echo 0; fi; }
+canary_incident() { touch "$FAKE/canary_incident"; canary; rm "$FAKE/canary_incident"; }
+
+reset_fakes; canary_incident
+check "no dispatch token yet: the Incident waits in the outbox" test "$(incidents)" = 1
+check "  and nothing is sent" test "$(calls)" = 0
+
+reset_fakes; with_token; canary_incident
+check "a health run's Incident is sent to GitHub straight away" test "$(calls)" = 1
+check "  as a repository dispatch event to this repo" \
+  grep -q "POST https://api.github.com/repos/GTalksTech/gtt-web-scraper/dispatches" "$FAKE/curl.args"
+check "  of type incident, carrying the Incident" \
+  test "$(jq -r '"\(.event_type) \(.client_payload.fingerprint) \(.client_payload.kind)"' "$FAKE/curl.body")" \
+       = "incident canary_failed:lwn.net canary_failed"
+check "  with the token in a header" grep -qx "Authorization: Bearer github_pat_test" "$FAKE/curl.auth"
+check "  never on the command line" fails grep -q github_pat_test "$FAKE/curl.args"
+check "  and leaves the outbox" test "$(incidents)" = 0
+check "  for the sent log" test "$(sent)" = 1
+
+reset_fakes; with_token; echo 3 > "$FAKE/canary_rc"; up
+check "a kept-out deploy's Incident is sent by the deploy pass" \
+  test "$(jq -r .client_payload.fingerprint "$FAKE/curl.body")" = deploy_rejected
+
+reset_fakes; with_token; printf '000\n' > "$FAKE/http"; canary_incident
+check "GitHub unreachable: the Incident waits in the outbox" test "$(incidents)" = 1
+canary_incident
+check "  the next run tries the waiting one and the new one" test "$(sent)" = 2
+check "  and the outbox is empty" test "$(incidents)" = 0
+
+reset_fakes; with_token
+printf '{"fingerprint": "a", "kind": "k", "effect": "e"}\n{"fingerprint": "b", "kind": "k", "effect": "e"}\n{"fingerprint": "c", "kind": "k", "effect": "e"}\n' > "$PI/incidents.jsonl"
+printf '204\n000\n' > "$FAKE/http"
+check "a run that loses GitHub halfway reports failure" fails report
+check "  sent what it could" test "$(sent)" = 1
+check "  stopped trying once GitHub was unreachable" test "$(calls)" = 2
+check "  and kept the rest, in order" test "$(jq -r .fingerprint "$PI/incidents.jsonl" | paste -sd, -)" = "b,c"
+check "  so the next run sends them" report
+check "  all of them" test "$(sent)" = 3
+
+reset_fakes; with_token
+printf 'not json\n{"fingerprint": "a", "kind": "k", "effect": "e"}\n{"no": "fingerprint"}\n' > "$PI/incidents.jsonl"
+report
+check "a line that isn't an Incident is set aside" test "$(wc -l < "$PI/incidents-unsendable.jsonl" | tr -d ' ')" = 2
+check "  without holding up the others" test "$(sent)" = 1
+check "  or staying in the outbox" test "$(incidents)" = 0
+
+reset_fakes; with_token
+printf '{"fingerprint": "a", "kind": "k", "effect": "e"}\n' > "$PI/incidents.jsonl"; printf '401\n' > "$FAKE/http"
+report || true
+check "token refused: the Incident waits" test "$(incidents)" = 1
+check "  and the journal says to renew the token" grep -q "setup wizard" "$FAKE/report.log"
+
+reset_fakes; with_token
+python3 -c 'import json; print(json.dumps({"fingerprint": "big", "kind": "k", "effect": "e", "evidence": {"sample": "x" * 200000}}))' \
+  > "$PI/incidents.jsonl"
+report
+check "huge evidence is cut to fit GitHub's limit" \
+  test "$(wc -c < "$FAKE/curl.body" | tr -d ' ')" -lt 65535
+check "  saying where the full evidence is" grep -q "incidents-sent.jsonl on pi5" "$FAKE/curl.body"
+check "  while the sent log keeps all of it" test "$(wc -c < "$PI/incidents-sent.jsonl" | tr -d ' ')" -gt 200000
+
+reset_fakes; with_token
+python3 -c 'import json; print(json.dumps({"fingerprint": "q", "kind": "k", "effect": "e", "evidence": {"sample": "\"\\" * 100000}}))' \
+  > "$PI/incidents.jsonl"
+report
+check "evidence that grows when escaped still fits" \
+  test "$(wc -c < "$FAKE/curl.body" | tr -d ' ')" -lt 65535
+
+reset_fakes; with_token
+printf '{"fingerprint": "a", "kind": "k", "effect": "old"}\n{"fingerprint": "b", "kind": "k", "effect": "e"}\n{"fingerprint": "a", "kind": "k", "effect": "new"}\n' \
+  > "$PI/incidents.jsonl"
+report
+check "the same fingerprint twice in a batch is sent once (two would race to open two issues)" \
+  test "$(jq -r .client_payload.fingerprint "$FAKE/curl.body" | sort | paste -sd, -)" = "a,b"
+check "  with the newest evidence" \
+  test "$(jq -r 'select(.client_payload.fingerprint == "a") | .client_payload.effect' "$FAKE/curl.body")" = new
+check "  and all three are in the sent log" test "$(sent)" = 3
+
 # ── install.sh ─────────────────────────────────────────────────────────────
 echo "install.sh"
 install_pi() {
@@ -287,6 +389,7 @@ check "  persistent" grep -qx "Persistent=true" "$U/gtt-canary.timer"
 check "deploy units allow time for two Canary runs" \
   grep -qx "TimeoutStartSec=45min" "$U/gtt-web-scraper-update.service"
 check "gtt-canary.sh made executable" test -x "$PI/gtt-canary.sh"
+check "gtt-report.sh made executable" test -x "$PI/gtt-report.sh"
 check "no template placeholders left" fails grep -rq "@DIR@" "$U"
 check "hardware watchdog configured" \
   grep -qx "RuntimeWatchdogSec=15s" "$T/etc/systemd/system.conf.d/gtt-watchdog.conf"
