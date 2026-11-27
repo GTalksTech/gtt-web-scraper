@@ -33,7 +33,9 @@ body=$(curl -sS --max-time 90 "http://$HOST:$PORT/v1/scrape" \
 if jq -e '.success == true and (.data.markdown | length) > 1000' <<< "$body" > /dev/null 2>&1; then
   ok "scrape returned $(jq -r '.data.markdown | length' <<< "$body") chars of markdown" \
      "(fetcher: $(jq -r .data.fetcher <<< "$body"), verdict: $(jq -r .data.verdict <<< "$body"))"
-  jq -r '.data.markdown' <<< "$body" | head -n 5 | sed 's/^/          /'
+  # sed reads all of jq's output; `head` would close the pipe early and, under
+  # pipefail, end the script with SIGPIPE before the remaining checks.
+  jq -r '.data.markdown' <<< "$body" | sed -n '1,5s/^/          /p'
 else
   bad "scrape of $URL did not return markdown: $(head -c 400 <<< "$body")"
 fi

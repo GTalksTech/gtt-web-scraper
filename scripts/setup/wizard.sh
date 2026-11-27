@@ -347,7 +347,11 @@ check_dispatch() {
 check_claude() {
   [[ -n "$1" ]] || { LAST_WHY="nothing pasted"; return 1; }
   LAST_WHY="Claude didn't answer using that token"
-  ( unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN
+  # A terminal inside the Claude desktop app (or a Claude Code session) carries
+  # ANTHROPIC_BASE_URL and CLAUDE_* settings that point claude at the app's own
+  # connection, which rejects any other token. Drop them all for this check.
+  ( unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL CLAUDECODE
+    for v in $(compgen -e | grep '^CLAUDE_'); do unset "$v"; done
     export CLAUDE_CODE_OAUTH_TOKEN="$1"
     claude -p "Reply with the single word: ok" 2>/dev/null ) | grep -qiE '^ *ok[.!]? *$'
 }
