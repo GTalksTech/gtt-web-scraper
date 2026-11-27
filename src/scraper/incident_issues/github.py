@@ -9,7 +9,7 @@ import os
 import urllib.error
 import urllib.request
 from datetime import datetime
-from typing import Any
+from typing import Any, Self
 from urllib.parse import urlencode
 
 from .notices import LABEL, Issue
@@ -26,7 +26,7 @@ class GitHubIssues:
         self.api = api.rstrip("/")
 
     @classmethod
-    def from_env(cls) -> GitHubIssues:
+    def from_env(cls) -> Self:
         return cls(
             os.environ["GITHUB_REPOSITORY"],
             os.environ["GH_TOKEN"],
@@ -54,7 +54,11 @@ class GitHubIssues:
         return json.loads(raw) if raw else None
 
     def incident_issues(self, state: str, since: datetime | None = None) -> list[Issue]:
-        query: dict[str, str] = {"labels": LABEL, "state": state, "per_page": "100"}
+        return self.labelled(LABEL, state, since)
+
+    def labelled(self, label: str, state: str, since: datetime | None = None) -> list[Issue]:
+        """Issues (not pull requests) labelled `label` in `state`, updated since."""
+        query: dict[str, str] = {"labels": label, "state": state, "per_page": "100"}
         if since is not None:
             query["since"] = since.strftime("%Y-%m-%dT%H:%M:%SZ")
         issues: list[Issue] = []
@@ -121,6 +125,7 @@ def _issue(raw: dict[str, Any]) -> Issue:
         closed_at=_time(raw.get("closed_at")),
         updated_at=_time(raw.get("updated_at")) or datetime.fromtimestamp(0).astimezone(),
         state_reason=raw.get("state_reason"),
+        created_at=_time(raw.get("created_at")),
     )
 
 

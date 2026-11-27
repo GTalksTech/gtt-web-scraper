@@ -24,6 +24,7 @@ from ..dates import published_date
 from .cache import SearchCache
 from ..fetchers import QUOTA_EXHAUSTED
 from ..health.rates import Outcome, SuccessRate, SuccessRates
+from ..health.usage import CACHE, FAILED, RequestLog
 from .providers import (
     NOT_CONFIGURED,
     ProviderError,
@@ -89,6 +90,7 @@ class Searcher:
         self._ranking = SourceRanking(config.source_list)
         self._pages = PageCache(config.cache, clock)
         self._rates = SuccessRates(config.cache.resolved_path(), clock)
+        self._requests = RequestLog(config.cache.resolved_path(), clock)
         self._health_window_s = config.health.window_s
         self._clock = clock
 
@@ -103,17 +105,29 @@ class Searcher:
         return self._rates.rates("provider", self.providers, self._health_window_s)
 
     def search(
-        self, query: str, limit: int, forced: str | None = None
+        self, query: str, limit: int, forced: str | None = None, *, check: bool = False
     ) -> SearchSuccess | SearchFailure:
         """Up to `limit` results for `query`: from the cache if the same query was
         searched recently (24 hours by default) for at least as many results, else from
         the first Provider that answers with results. `forced` names the only Provider
         to ask, live: the cache isn't read, and a failure isn't passed on.
-        Raises UnknownProvider if `forced` isn't a configured Search Provider."""
+        Raises UnknownProvider if `forced` isn't a configured Search Provider. `check`
+        marks a Canary Set check rather than a Caller's request, in the request log."""
         if forced is not None and forced not in self.providers:
             raise UnknownProvider(
                 f"unknown Search Provider {forced!r}; expected one of: {', '.join(self.providers)}"
             )
+        outcome = self._search(query, limit, forced)
+        if isinstance(outcome, SearchFailure):
+            served_by = FAILED
+        else:
+            served_by = CACHE if outcome.cached_at is not None else outcome.provider
+        self._requests.record("search", served_by, check=check)
+        return outcome
+
+    def _search(
+        self, query: str, limit: int, forced: str | None
+    ) -> SearchSuccess | SearchFailure:
         cached = self._cache.get(query, limit) if forced is None else None
         # A cached answer the Source List now blocks entirely is searched again.
         shown = self._present(cached.results, limit, cached.searched_at) if cached else []

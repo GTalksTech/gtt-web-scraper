@@ -36,8 +36,9 @@ Outcome = Literal["success", "failure", "unavailable"]
 # What a rate is kept for. Also the key naming it in the rate's JSON.
 Subject = Literal["fetcher", "provider", "adapter"]
 
-# Attempts older than this are dropped; well past any window a rate is counted over.
-RETENTION_S = 30 * 86400.0
+# Attempts older than this are dropped: well past any window a rate is counted over,
+# and long enough that the monthly summary, run on the 1st, still has all of last month.
+RETENTION_S = 62 * 86400.0
 
 _SCHEMA = (
     """
@@ -138,25 +139,31 @@ class SuccessRates:
 
     def rates(self, subject: Subject, names: list[str], window_s: float) -> list[SuccessRate]:
         """Each of `names`' rate over the last `window_s`, in the order given."""
-        since = self._clock() - window_s
+        now = self._clock()
+        return self.between(subject, names, now - window_s, now + 1)
+
+    def between(
+        self, subject: Subject, names: list[str], since: float, until: float
+    ) -> list[SuccessRate]:
+        """Each of `names`' rate from `since` to `until` (exclusive), in the order given."""
         try:
             with connect(self._path) as db:
                 counts = {
                     (name, outcome): n
                     for name, outcome, n in db.execute(
                         "SELECT name, outcome, COUNT(*) FROM outcomes"
-                        " WHERE subject = ? AND at >= ? GROUP BY name, outcome",
-                        (subject, since),
+                        " WHERE subject = ? AND at >= ? AND at < ? GROUP BY name, outcome",
+                        (subject, since, until),
                     )
                 }
                 latest = {
                     name: (outcome, reason)
                     for name, outcome, reason in db.execute(
                         "SELECT name, outcome, reason FROM outcomes AS o"
-                        " WHERE subject = ? AND at >= ? AND rowid = (SELECT rowid FROM outcomes"
-                        "  WHERE subject = o.subject AND name = o.name"
+                        " WHERE subject = ? AND at >= ? AND at < ? AND rowid = (SELECT rowid"
+                        "  FROM outcomes WHERE subject = o.subject AND name = o.name AND at < ?"
                         "  ORDER BY at DESC, rowid DESC LIMIT 1)",
-                        (subject, since),
+                        (subject, since, until, until),
                     )
                 }
         except sqlite3.Error:

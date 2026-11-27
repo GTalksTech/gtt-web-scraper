@@ -26,11 +26,12 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Header, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from .config import Config, load_config
+from .health.usage import RequestLog, month_bounds
 from .mcp_server import create_mcp_server, serve_mcp
 from .responses import (
     UNKNOWN_FETCHER,
@@ -90,6 +91,7 @@ def create_app(
     config = config or load_config()
     router = Router(config, clock)
     searcher = Searcher(config, clock)
+    requests = RequestLog(config.cache.resolved_path(), clock)
     app = FastAPI(title="gtt-web-scraper")
     # The MCP tools for Claude Code, at /mcp on the same port (ADR 0003).
     serve_mcp(app, create_mcp_server(router, searcher))
@@ -124,12 +126,30 @@ def create_app(
             "adapters": [rate.to_json() for rate in router.adapter_rates()],
         }
 
+    @app.get("/health/usage")
+    def usage(month: str = Query(default="", pattern=r"^(\d{4}-\d{2})?$")) -> JSONResponse:
+        """A month's usage (YYYY-MM, UTC; default this month), for the monthly summary:
+        Callers' requests by what served them, the Canary Set's checks, and each
+        Fetcher's attempts (the Paid Fetcher's are Firecrawl credits spent)."""
+        month = month or time.strftime("%Y-%m", time.gmtime(clock()))
+        try:
+            since, until = month_bounds(month)
+        except ValueError:
+            return JSONResponse(status_code=422, content={"error": f"not a month: {month!r}"})
+        return JSONResponse(
+            {
+                "month": month,
+                **requests.between(since, until),
+                "fetchers": [r.to_json() for r in router.fetcher_rates_between(since, until)],
+            }
+        )
+
     @app.post("/v1/scrape")
     @app.post("/v2/scrape")
-    def scrape(request: ScrapeRequest) -> JSONResponse:
+    def scrape(request: ScrapeRequest, x_gtt_check: str | None = Header(default=None)) -> JSONResponse:
         max_age_s = None if request.maxAge is None else request.maxAge / 1000
         try:
-            outcome = router.get(request.url, max_age_s, request.fetcher)
+            outcome = router.get(request.url, max_age_s, request.fetcher, check=bool(x_gtt_check))
         except UnknownFetcher as exc:
             return JSONResponse(
                 status_code=422,
@@ -173,10 +193,12 @@ def create_app(
             }
         )
 
-    def search(request: SearchRequest, default_limit: int, shape: WebShape) -> JSONResponse:
+    def search(
+        request: SearchRequest, default_limit: int, shape: WebShape, check: bool
+    ) -> JSONResponse:
         try:
             outcome = searcher.search(
-                request.query, request.limit or default_limit, request.provider
+                request.query, request.limit or default_limit, request.provider, check=check
             )
         except UnknownProvider as exc:
             return JSONResponse(
@@ -191,14 +213,18 @@ def create_app(
         return _search_success(outcome, shape)
 
     @app.post("/v1/search")
-    def search_v1(request: SearchRequest) -> JSONResponse:
+    def search_v1(
+        request: SearchRequest, x_gtt_check: str | None = Header(default=None)
+    ) -> JSONResponse:
         # v1: the results are `data` itself.
-        return search(request, default_limit=5, shape=lambda web: web)
+        return search(request, 5, lambda web: web, bool(x_gtt_check))
 
     @app.post("/v2/search")
-    def search_v2(request: SearchRequest) -> JSONResponse:
+    def search_v2(
+        request: SearchRequest, x_gtt_check: str | None = Header(default=None)
+    ) -> JSONResponse:
         # v2: results are grouped by source; we only search the web.
-        return search(request, default_limit=10, shape=lambda web: {"web": web})
+        return search(request, 10, lambda web: {"web": web}, bool(x_gtt_check))
 
     return app
 

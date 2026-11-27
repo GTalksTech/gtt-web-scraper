@@ -209,6 +209,8 @@ finish() {
 #     file into a private temp dir, edits it there, pushes it back over SSH, and
 #     deletes the temp copy on exit. No key is ever written into the repo.
 #   - Repo secrets CLAUDE_CODE_OAUTH_TOKEN and TS_AUTHKEY go to GitHub via gh.
+#   - GitHub settings (ticket #11), also via gh: branch protection on main requiring
+#     the tests check, and the pinned issue the monthly summary edits.
 #   - Non-secret answers (ssh users, port, env path) go to .env.setup in the
 #     repo root, which .gitignore already ignores (.env.*), so re-runs remember
 #     them.
@@ -466,11 +468,58 @@ policy_snippet() {
 EOF
 }
 
+# ── GitHub settings (ticket #11) ───────────────────────────────────────────
+# Branch protection on main: the `tests` job of .github/workflows/tests.yml must pass,
+# reported by GitHub Actions itself (app 15368), so no other app can post a passing
+# `tests` status. No reviews (the agent's fix merges itself; see ADR 0004), no force
+# pushes or deletion; admins aren't bound, so Garrett can always merge by hand.
+PROTECTION='{
+  "required_status_checks": {"strict": false, "checks": [{"context": "tests", "app_id": 15368}]},
+  "enforce_admins": false,
+  "required_pull_request_reviews": null,
+  "restrictions": null,
+  "allow_force_pushes": false,
+  "allow_deletions": false
+}'
+SUMMARY_LABEL="monthly-summary"
+SUMMARY_TITLE="📊 gtt-web-scraper monthly summary"
+
+protect_main() {
+  LAST_WHY="gh couldn't set branch protection on main"
+  printf '%s' "$PROTECTION" | gh api -X PUT "repos/$REPO/branches/main/protection" --input - >/dev/null 2>&1 || return 1
+  LAST_WHY="main's protection doesn't require the tests check"
+  gh api "repos/$REPO/branches/main/protection" \
+    --jq '.required_status_checks.checks[] | select(.context == "tests" and .app_id == 15368) | .context' \
+    2>/dev/null | grep -qx tests
+}
+
+# summary_issue: open (once), lock and pin the issue the monthly summary edits. Opened
+# by Garrett's own gh login, so GitHub sends no email about it.
+summary_issue() {
+  local number
+  LAST_WHY="gh couldn't list the repo's issues"
+  number=$(gh issue list --label "$SUMMARY_LABEL" --state open --json number --jq '.[0].number // empty' 2>/dev/null) || return 1
+  if [[ -z "$number" ]]; then
+    LAST_WHY="gh couldn't open the summary issue"
+    gh label create "$SUMMARY_LABEL" --color BFD4F2 \
+      --description "The pinned monthly summary (edited, never commented on)" --force >/dev/null 2>&1 || return 1
+    number=$(gh issue create --title "$SUMMARY_TITLE" --label "$SUMMARY_LABEL" \
+      --body "The first summary arrives on the 1st of next month (.github/workflows/monthly-summary.yml)." \
+      2>/dev/null | sed -n 's#.*/issues/\([0-9][0-9]*\)$#\1#p') || return 1
+    [[ -n "$number" ]] || return 1
+  fi
+  # Locked, so only you and the repo's bots can comment: no stray comment emails.
+  gh issue lock "$number" --reason resolved >/dev/null 2>&1 || true
+  gh issue pin "$number" >/dev/null 2>&1 || true
+  LAST_WHY="issue #$number isn't pinned yet"
+  [[ "$(gh issue view "$number" --json isPinned --jq .isPinned 2>/dev/null)" == "true" ]]
+}
+
 # ──────────────────────────────────────────────────────────────────────────
 
 run_wizard() {
 
-TOTAL_STAGES=10
+TOTAL_STAGES=11
 
 banner "gtt-web-scraper: one-time setup (about 30 minutes)"
 
@@ -638,6 +687,18 @@ if ! keep_secret TS_AUTHKEY; then
   done
   put_secret TS_AUTHKEY "$TS_AUTHKEY"
 fi
+wait_enter "Press Enter for the last step: protect main, and pin the monthly summary."
+
+# ── 11 ────────────────────────────────────────────────────────────────────
+stage "Protect main, and pin the monthly summary issue"
+say "Two GitHub settings, made for you through gh (re-running changes nothing):"
+step "main only takes a merge once the 'tests' check from GitHub Actions passes."
+note "No reviews are required, so the fixing agent's fix can merge itself (automerge.yml);"
+note "a fix that weakens the checks waits for you. You (an admin) can still merge anything."
+step "A pinned, locked issue the monthly summary rewrites on the 1st (an edit: no email)."
+wait_enter "Press Enter to apply them."
+verify "main requires the tests check" protect_main
+verify "the monthly summary issue is open and pinned" summary_issue
 wait_enter "Press Enter for the summary."
 
 ENV_FILE="pi5:$PI5_ENV_PATH and $SETUP_FILE"

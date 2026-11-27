@@ -78,6 +78,7 @@ class Issue:
     closed_at: datetime | None
     updated_at: datetime
     state_reason: str | None = None  # "completed" or "not_planned" once closed
+    created_at: datetime | None = None
 
 
 class IssueTracker(Protocol):
@@ -140,6 +141,7 @@ class State:
     needs_you: str | None = None  # why it's waiting on Garrett, once it is
     repeat_comment: int | None = None  # the "seen again" comment later repeats edit
     pr: str | None = None  # the agent's latest pull request
+    todo: str | None = None  # what Garrett should do, when the kind's usual advice won't do
 
     def runs_since(self, when: datetime) -> int:
         return sum(datetime.fromisoformat(a) >= when for a in self.attempts)
@@ -209,6 +211,23 @@ def closed_as_fixed(gh: IssueTracker, number: int) -> None:
     if state is None or issue.title.startswith("✅"):
         return
     _notify_fixed(gh, issue, state)
+
+
+def held_for_review(gh: IssueTracker, number: int, pr: str, weakened: list[str]) -> None:
+    """The agent's pull request `pr` for issue `number` passed its tests but weakens the
+    checks (`weakened`, one line each), so it won't merge itself: hand it to Garrett,
+    once however often the tests run again."""
+    issue = gh.issue(number)
+    state = _state(issue)
+    if state is None or issue.state != "open" or state.needs_you:
+        return
+    state.pr = pr
+    state.todo = (
+        f"Review {pr}: merge it if weakening the checks is right, or close it and fix this"
+        " another way."
+    )
+    reasons = "; ".join(_plain(line) for line in weakened)
+    _escalate(gh, issue, state, f"its fix weakens the checks, so it won't merge itself ({reasons})")
 
 
 def reachability(gh: IssueTracker, *, joined: bool, answered: bool, detail: str, now: datetime) -> Filed | None:
@@ -297,7 +316,15 @@ def _repeat(gh: IssueTracker, issue: Issue, state: State, incident: Incident, no
 
 
 def _reopen(gh: IssueTracker, issue: Issue, state: State, incident: Incident, now: datetime) -> Filed:
-    state = replace(state, effect=incident.effect, seen=state.seen + 1, needs_you=None, repeat_comment=None, pr=None)
+    state = replace(
+        state,
+        effect=incident.effect,
+        seen=state.seen + 1,
+        needs_you=None,
+        repeat_comment=None,
+        pr=None,
+        todo=None,
+    )
     blocked = _blocked(gh, state, now)
     if blocked:
         state.needs_you = blocked
@@ -419,7 +446,7 @@ def _needs_you(state: State) -> list[str]:
     return [
         f"**What's broken:** {_sentence(state.effect)}",
         f"**What the agent is doing:** Nothing more: {state.needs_you}.",
-        f"**Do you need to act?** Yes. {NEEDS_YOU.get(state.kind, DEFAULT_TODO)}",
+        f"**Do you need to act?** Yes. {state.todo or NEEDS_YOU.get(state.kind, DEFAULT_TODO)}",
     ]
 
 

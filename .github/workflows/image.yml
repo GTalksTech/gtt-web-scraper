@@ -2,6 +2,9 @@
 # publish it to GHCR as :main and :sha-<7 chars>. pi5's update timer pulls :main
 # (deploy/pi5/gtt-up.sh); nothing pushes into the home network.
 #
+# A merge made with a workflow's own token starts no push workflow, so automerge.yml
+# starts this one by hand (workflow_dispatch) after merging the agent's fix.
+#
 # Actions are pinned to commit SHAs (tag in the comment) so a moved tag can't
 # change what runs with packages: write.
 
@@ -20,19 +23,9 @@ concurrency:
 
 jobs:
   test:
-    runs-on: ubuntu-24.04
+    uses: ./.github/workflows/tests.yml
     permissions:
       contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
-      - run: uv sync --frozen
-      - run: uv run mypy
-      - run: uv run pytest -q
-      - run: bash scripts/setup/test-wizard.sh
-      - run: bash deploy/pi5/test-deploy.sh
 
   image:
     needs: test
