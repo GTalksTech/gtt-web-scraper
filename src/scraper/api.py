@@ -90,6 +90,15 @@ def create_app(
     def health() -> dict[str, str]:
         return {"status": "ok"}
 
+    @app.get("/health/fetchers")
+    def fetcher_health() -> dict[str, Any]:
+        """Each Fetcher's rolling success rate, for the health runner (our own endpoint;
+        Firecrawl has none like it)."""
+        return {
+            "windowSeconds": config.health.window_s,
+            "fetchers": [rate.to_json() for rate in router.fetcher_rates()],
+        }
+
     @app.post("/v1/scrape")
     @app.post("/v2/scrape")
     def scrape(request: ScrapeRequest) -> JSONResponse:

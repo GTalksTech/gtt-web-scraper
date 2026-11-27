@@ -3,11 +3,13 @@
 How it works:
 
 - **Build.** Every merge to `main` runs the tests, then builds an arm64 image and publishes it to GHCR as `ghcr.io/gtalkstech/gtt-web-scraper:main` and `:sha-<7 chars>` (`.github/workflows/image.yml`).
-- **Deploy.** On pi5, `gtt-web-scraper-update.timer` runs `gtt-up.sh` every 10 minutes: pull `:main`, and if it changed, replace the container. The Pi pulls; nothing pushes into the home network. `gtt-web-scraper.service` runs the same script at boot, once Docker and Tailscale are up.
+- **Deploy.** On pi5, `gtt-web-scraper-update.timer` runs `gtt-up.sh` every 10 minutes: pull `:main`, and if it changed, check it against the Canary Set before it takes traffic (below). The Pi pulls; nothing pushes into the home network. `gtt-web-scraper.service` runs the same script at boot, once Docker and Tailscale are up.
+- **Deploys gated by the Canary Set.** A new image first runs as `gtt-web-scraper-candidate` next to the live service: no published port, no volume, 1 core and 1 GB. From inside it, the Canary Set (`config/canary.yaml`) is run against the live service and against the candidate. The candidate replaces the live service only if it passes at least as many Canary pages. Otherwise the live image keeps serving, a `deploy_rejected` Incident goes to the outbox, and the image is listed in `.rejected-images` (and tagged `gtt-web-scraper:kept-out`), so it isn't tried or downloaded again; the next image on `:main` is checked afresh. On the very first install nothing is live to compare with, so the image just starts.
+- **Daily Canary Set and health.** `gtt-canary.timer` runs `gtt-canary.sh` once a day (around 06:00, or at the next boot if the Pi was off then), under the same lock as deploys. It runs the Canary Set against the live service and reads each Fetcher's rolling 24-hour success rate (`http://pi5:3002/health/fetchers`). Canary pages are fetched with the plain download only, so a run never spends Firecrawl credits.
+- **Incidents.** Every Incident found (a Canary page without its expected Verdict, a Fetcher whose success rate fell below the floor in `config/scraper.yaml`, the Paid Fetcher's quota running out, a kept-out deploy) is appended as one JSON line to `~/gtt-web-scraper/incidents.jsonl`: its kind, the effect a Caller sees, evidence, and a fingerprint that stays the same for the same problem. Sending them on to GitHub is the Incident pipeline's job (ticket #10); until then they collect in that file.
 - **Tailnet only.** The port is published on pi5's Tailscale IP only (`TAILNET_IP`, set by `gtt-up.sh`), so the LAN and the internet can't reach it. Without that IP the service doesn't start at all.
 - **Page cache.** Fetched pages are cached for 24 hours in SQLite at `/app/data` inside the container, which is the named volume `gtt-web-scraper_cache`, so the cache survives restarts and image updates. The same SQLite file holds per-site memory (which Fetcher last worked on each site, and sites on a cool-down), so emptying the volume forgets that too. To empty it: `ssh pi5 'cd ~/gtt-web-scraper && TAILNET_IP=127.0.0.1 docker compose down && docker volume rm gtt-web-scraper_cache'`, then deploy now.
 - **Hardening.** The container gets 2 of 4 cores, 2 GB of 16 (no extra swap), a process cap, and is the kernel's first choice to kill under memory pressure, so tailscaled (exit node, subnet router) always has room. It restarts if it exits; the timer restarts it if its healthcheck says it hung; systemd pets the hardware watchdog so a hung Pi reboots itself. Container logs rotate at 3 × 10 MB.
-- **Not yet:** running the Canary Set against a new image before it takes traffic, and rolling back when it does worse (spec #1, Deploy). Today a new `:main` replaces the old one directly.
 
 The files in this folder live on pi5 in `~/gtt-web-scraper/`, next to the `.env` file the setup wizard writes there.
 
@@ -89,7 +91,10 @@ claude mcp add --transport http --scope user gtt-scraper http://pi5:3002/mcp
 
 ## Day to day
 
-- **What got deployed:** `ssh pi5 journalctl -u gtt-web-scraper-update -u gtt-web-scraper -n 50`. A deploy logs `deployed sha256:… (was sha256:…)`.
+- **What got deployed:** `ssh pi5 journalctl -u gtt-web-scraper-update -u gtt-web-scraper -n 50`. A deploy logs the Canary scores of both versions, then `deployed sha256:… (was sha256:…)` or `kept out sha256:…`.
+- **Run the Canary Set now:** `ssh pi5 sudo systemctl start gtt-canary`, then `ssh pi5 journalctl -u gtt-canary -n 40` for the score and each failing page.
+- **Incidents so far:** `ssh pi5 cat ~/gtt-web-scraper/incidents.jsonl`. Success rates: `curl http://pi5:3002/health/fetchers`.
+- **Deploy a kept-out image anyway** (you've checked the Canary failures are the sites' fault, not the image's): `ssh pi5 'cd ~/gtt-web-scraper && sudo rm -f .rejected-images && sudo GTT_DEPLOY_UNGATED=1 ./gtt-up.sh'`. The same variable skips the check for a rollback you pinned with `IMAGE_TAG`.
 - **Deploy now** instead of waiting for the timer: `ssh pi5 sudo systemctl start gtt-web-scraper-update`.
 - **Pin or roll back** to an earlier build: add `IMAGE_TAG=sha-<7 chars>` (from the commit) to `~/gtt-web-scraper/.env` on pi5, then deploy now. Remove the line to follow `main` again.
 - **Changed a file in this folder** (compose.yml, units, scripts)? Those don't ride along with the image. Repeat steps 5 and 6; re-installing applies them without downtime.

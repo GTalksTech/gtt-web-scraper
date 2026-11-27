@@ -14,6 +14,9 @@ and respects cool-downs like the plain download, and a 403 or 429 from it starts
 the GitHub adapter calls GitHub's API host, not the page's. Adapters are not recorded
 in per-site memory, which orders the Ladder. A forced Fetcher skips them: the Caller
 asked for that Fetcher and nothing else.
+
+Every attempt a Fetcher on the Ladder makes counts towards its rolling success rate
+(health/rates.py); one skipped for a cool-down doesn't.
 """
 
 from __future__ import annotations
@@ -29,6 +32,7 @@ from .fetchers import COOLING_DOWN, Fetcher, FetchError, FetcherUnavailable
 from .fetchers.paid import PaidFetcher
 from .fetchers.plain import PlainFetcher
 from .gate import BLOCKED, CHALLENGE, FETCH_ERROR, INTERACTIVE_CHALLENGE, Verdict, judge
+from .health.rates import FetcherHealth, FetcherRate
 from .page import FetchedPage
 from .sites import SiteMemory, Spacer, site_of
 
@@ -74,6 +78,8 @@ class UnknownFetcher(ValueError):
 # Responses that mean a site is blocking the home connection.
 _BLOCK_STATUSES = (403, 429)
 _BLOCK_REASONS = (CHALLENGE, INTERACTIVE_CHALLENGE, BLOCKED)
+# Verdict reasons that mean the page doesn't exist, rather than that a Fetcher failed.
+_MISSING_PAGE = ("http_404", "http_410")
 
 
 def _build_ladder(config: Config) -> list[Fetcher]:
@@ -92,11 +98,16 @@ class Router:
         self._sites = SiteMemory(config.cache.resolved_path(), config.sites, clock)
         self._spacer = Spacer(config.sites.min_interval_s)
         self._adapters = build_adapters(config.adapters)
+        self._health = FetcherHealth(config.cache.resolved_path(), clock)
 
     @property
     def fetchers(self) -> list[str]:
         """Names of the Fetchers on the Ladder, in order: what a Caller may force."""
         return [f.name for f in self._ladder]
+
+    def fetcher_rates(self) -> list[FetcherRate]:
+        """Each Fetcher's rolling success rate over the configured window, Ladder order."""
+        return self._health.rates(self.fetchers, self._config.health.window_s)
 
     def get(
         self, url: str, max_age_s: float | None = None, forced: str | None = None
@@ -143,6 +154,7 @@ class Router:
                 continue
             attempt, page = self._try(fetcher, url, site)
             attempts.append(attempt)
+            self._count(attempt)
             if fetcher.home_connection and _is_block(attempt):
                 cooldown = self._sites.blocked(site, attempt.verdict.reason)
             if page is not None and attempt.verdict.decision != "rejected":
@@ -150,6 +162,19 @@ class Router:
                 self._cache.put(url, page, fetcher.name, attempt.verdict)
                 return Success(page, fetcher.name, attempt.verdict, attempts)
         return Failure(attempts)
+
+    def _count(self, attempt: Attempt) -> None:
+        """Count a Fetcher's attempt towards its success rate. A page the site says
+        doesn't exist (404, 410) isn't counted either way: the Fetcher got the site's
+        real answer, and the Canary Set asks for such pages every day."""
+        if attempt.verdict.reason in _MISSING_PAGE:
+            return
+        if attempt.unavailable:
+            self._health.record(attempt.fetcher, "unavailable", attempt.verdict.reason)
+        elif attempt.verdict.decision == "rejected":
+            self._health.record(attempt.fetcher, "failure", attempt.verdict.reason)
+        else:
+            self._health.record(attempt.fetcher, "success")
 
     def _adapter_for(self, url: str) -> SiteAdapter | None:
         return next((a for a in self._adapters if a.handles(url)), None)

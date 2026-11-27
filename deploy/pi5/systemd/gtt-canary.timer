@@ -1,0 +1,12 @@
+# Runs the Canary Set once a day. Persistent: a run missed while the Pi was off
+# happens at the next boot.
+[Unit]
+Description=gtt-web-scraper: daily Canary Set
+
+[Timer]
+OnCalendar=*-*-* 06:00:00
+RandomizedDelaySec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

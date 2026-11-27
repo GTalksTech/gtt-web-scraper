@@ -1,0 +1,87 @@
+# The Canary Set: trusted, content-rich, current URLs with the Verdict the service must
+# give each, run daily on pi5 and against every new version before it takes traffic
+# (python -m scraper.health; deploy/pi5/gtt-canary.sh and gtt-up.sh). A page that
+# doesn't get its expected Verdict raises an Incident.
+#
+# Each entry:
+#   url:       the page
+#   expected:  accepted (real content), suspect, or rejected (known-bad: never content)
+#   reason:    optional; the Verdict reason expected too (e.g. http_404)
+#   fetcher:   optional; the Fetcher to force (default plain, the plain download), or
+#              "auto" for none. Keep it plain: a run must never spend the Paid
+#              Fetcher's quota, and a known-bad page would otherwise escalate to it.
+#
+# Rules (ADR 0002): the agent may add entries. Removing one, or loosening it (accepted
+# to suspect, dropping a reason), is excluded from auto-merge and needs Garrett's
+# approval. Pick pages that are stable, public, need no JavaScript, and sit on sites
+# that tolerate a daily visit; one site's failures make one Incident.
+#
+# Seeded 2026-11-27 and checked with the plain download from a home connection: every
+# entry got its expected Verdict. Left out then: raspberrypi.com (Cloudflare
+# challenge), blog.rust-lang.org (rendered by JavaScript), and kernel.org, the Rust
+# book's intro and docs.docker.com/compose/ (too little text: suspect).
+
+# ── real content: documentation and reference ──────────────────────────────
+- url: https://docs.python.org/3/library/sqlite3.html
+  expected: accepted
+- url: https://en.wikipedia.org/wiki/Raspberry_Pi
+  expected: accepted
+- url: https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/Overview
+  expected: accepted
+- url: https://www.postgresql.org/docs/current/sql-select.html
+  expected: accepted
+- url: https://www.sqlite.org/lang_select.html
+  expected: accepted
+- url: https://doc.rust-lang.org/book/ch04-01-what-is-ownership.html
+  expected: accepted
+- url: https://go.dev/doc/effective_go
+  expected: accepted
+- url: https://nodejs.org/api/fs.html
+  expected: accepted
+- url: https://www.rfc-editor.org/rfc/rfc9110.html
+  expected: accepted
+- url: https://kubernetes.io/docs/concepts/overview/
+  expected: accepted
+- url: https://docs.docker.com/reference/dockerfile/
+  expected: accepted
+- url: https://tailscale.com/kb/1017/install
+  expected: accepted
+- url: https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html
+  expected: accepted
+- url: https://git-scm.com/docs/git-rebase
+  expected: accepted
+- url: https://github.com/python/cpython
+  expected: accepted
+
+# ── real content: pages that change daily (current) ────────────────────────
+- url: https://en.wikipedia.org/wiki/Main_Page
+  expected: accepted
+- url: https://lwn.net/
+  expected: accepted
+- url: https://news.ycombinator.com/
+  expected: accepted
+- url: https://www.python.org/downloads/
+  expected: accepted
+- url: https://www.debian.org/News/
+  expected: accepted
+- url: https://www.theregister.com/
+  expected: accepted
+- url: https://pypi.org/project/requests/
+  expected: accepted
+
+# ── known-bad: missing pages that must never come back as content ──────────
+- url: https://github.com/GTalksTech/definitely-not-a-repo-xyz
+  expected: rejected
+  reason: http_404
+- url: https://en.wikipedia.org/wiki/Definitely_not_an_article_xyz_123
+  expected: rejected
+  reason: http_404
+- url: https://docs.python.org/3/library/definitely-not-a-module-xyz.html
+  expected: rejected
+  reason: http_404
+- url: https://developer.mozilla.org/en-US/docs/Definitely/Not/A/Page_xyz
+  expected: rejected
+  reason: http_404
+- url: https://www.bbc.co.uk/news/articles/doesnotexist123
+  expected: rejected
+  reason: http_404

@@ -97,3 +97,19 @@ search:
   exa_url: https://api.exa.ai
   tavily_url: https://api.tavily.com
   duckduckgo_url: https://html.duckduckgo.com
+
+health:
+  # Rolling success rates per Fetcher, counted over this window (24 hours). Attempts
+  # skipped for a cool-down aren't counted; ones refused because the Fetcher is
+  # unavailable (quota exhausted) are counted apart and raise their own Incident.
+  window_s: 86400
+  # A Fetcher with fewer attempts than this in the window isn't judged.
+  min_attempts: 10
+  # A Fetcher whose share of successful attempts falls below this raises an Incident.
+  # The plain download is rejected on hard sites as a matter of course, so this is a
+  # floor for a quiet slide, not a target. Lowering it loosens a check and needs
+  # Garrett's approval (ADR 0002).
+  min_success_rate: 0.5
+  # When at least this share of the Canary Set fails at once, it's one widespread
+  # Incident instead of one per site. The Canary Set itself is config/canary.yaml.
+  widespread_fraction: 0.5

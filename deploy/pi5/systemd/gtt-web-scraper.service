@@ -17,7 +17,7 @@ Restart=on-failure
 RestartSec=30s
 # compose.yml refuses to parse without TAILNET_IP; down doesn't need the real one.
 ExecStop=/usr/bin/env TAILNET_IP=127.0.0.1 /usr/bin/docker compose down
-TimeoutStartSec=15min
+TimeoutStartSec=45min
 
 [Install]
 WantedBy=multi-user.target
