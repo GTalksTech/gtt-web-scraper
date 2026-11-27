@@ -7,6 +7,7 @@ request is recorded so tests can see what the site saw.
 from __future__ import annotations
 
 import threading
+import time
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -36,6 +37,7 @@ def page(
 class SeenRequest:
     path: str
     headers: dict[str, str]
+    at: float  # time.monotonic() when the request arrived
 
 
 class FakeWeb:
@@ -56,19 +58,24 @@ class FakeWeb:
         self._server.shutdown()
         self._server.server_close()
 
-    def serve(self, path: str, *responses: FakeResponse) -> str:
-        """Serve these responses at `path` in order (the last repeats). Returns the URL."""
+    def serve(self, path: str, *responses: FakeResponse, host: str = "127.0.0.1") -> str:
+        """Serve these responses at `path` in order (the last repeats). Returns the URL,
+        on `host`: "127.0.0.1" and "localhost" reach the same server as two sites."""
         with self._lock:
             self._routes[path] = list(responses)
             self._served[path] = 0
-        return self.url(path)
+        return self.url(path, host)
 
-    def url(self, path: str) -> str:
-        host, port = self._server.server_address[:2]
-        return f"http://{host!s}:{port}{path}"
+    def url(self, path: str, host: str = "127.0.0.1") -> str:
+        port = self._server.server_address[1]
+        return f"http://{host}:{port}{path}"
 
     def hits(self, path: str) -> int:
         return sum(1 for r in self.requests if r.path == path)
+
+    def arrivals(self, *paths: str) -> list[float]:
+        """When each request for these paths arrived (time.monotonic()), in order."""
+        return [r.at for r in self.requests if r.path in paths]
 
     def _next(self, path: str) -> FakeResponse | None:
         with self._lock:
@@ -85,7 +92,11 @@ class FakeWeb:
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self) -> None:  # noqa: N802 (stdlib name)
                 web.requests.append(
-                    SeenRequest(self.path, {k.lower(): v for k, v in self.headers.items()})
+                    SeenRequest(
+                        self.path,
+                        {k.lower(): v for k, v in self.headers.items()},
+                        time.monotonic(),
+                    )
                 )
                 response = web._next(self.path) or FakeResponse(b"<h1>404</h1>", 404)
                 self.send_response(response.status)

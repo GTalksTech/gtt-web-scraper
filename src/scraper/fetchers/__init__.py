@@ -14,6 +14,8 @@ class FetchError(Exception):
 # Why a Fetcher is unavailable; shown as the reason on its attempt.
 QUOTA_EXHAUSTED = "quota_exhausted"
 NOT_CONFIGURED = "not_configured"
+# Not tried because the site is on a cool-down after blocking the home connection.
+COOLING_DOWN = "cooling_down"
 
 
 class FetcherUnavailable(FetchError):
@@ -31,5 +33,8 @@ class Fetcher(Protocol):
     # Whether a non-interactive challenge is worth re-fetching. False for a Fetcher
     # that spends quota on every fetch.
     polls_challenges: bool
+    # Whether the Fetcher reaches the site over the home connection. Those Fetchers
+    # are spaced per site and skip a site on a cool-down.
+    home_connection: bool
 
     def fetch(self, url: str) -> FetchedPage: ...

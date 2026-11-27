@@ -25,8 +25,8 @@ services:
     env_file:
       - path: .env
         required: true
-    # The page cache (SQLite) lives in a named volume, so it survives restarts and
-    # image updates; replacing the container never empties it.
+    # The page cache and per-site memory (SQLite) live in a named volume, so they
+    # survive restarts and image updates; replacing the container never empties them.
     volumes:
       - cache:/app/data
     restart: unless-stopped

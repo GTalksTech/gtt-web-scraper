@@ -37,6 +37,8 @@ def config(firecrawl: FakeFirecrawl, tmp_path: Path) -> Config:
     # Fixed here so tests don't depend on tuning in config/scraper.yaml; polling is instant.
     config.gate.challenge_poll_attempts = 3
     config.gate.challenge_poll_interval_s = 0.0
+    # No spacing between requests unless a test asks for it: the fake web is one site.
+    config.sites.min_interval_s = 0.0
     # The Paid Fetcher talks to the fake Firecrawl, never the real one.
     config.paid.base_url = firecrawl.base_url
     config.paid.api_key = API_KEY

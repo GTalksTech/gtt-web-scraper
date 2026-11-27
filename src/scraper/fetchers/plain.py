@@ -21,6 +21,7 @@ from . import FetchError
 class PlainFetcher:
     name = "plain"
     polls_challenges = True
+    home_connection = True
 
     def __init__(self, config: PlainConfig) -> None:
         self._config = config

@@ -115,7 +115,8 @@ def test_once_quota_is_exhausted_the_paid_fetcher_is_unavailable(
     client: TestClient, web: FakeWeb, firecrawl: FakeFirecrawl
 ) -> None:
     first = web.serve("/news", page("cf_turnstile.html", 403, CF_HEADERS))
-    second = web.serve("/other", page("soft_404.html"))
+    # Another site: the first one is now on a cool-down for the plain download.
+    second = web.serve("/other", page("soft_404.html"), host="localhost")
     firecrawl.serve(second, firecrawl_page("article.html", ARTICLE_MARKDOWN))
     firecrawl.quota_exhausted = True
     scrape(client, first)
@@ -135,7 +136,8 @@ def test_requests_that_dont_need_the_paid_fetcher_still_work_after_quota_runs_ou
     client: TestClient, web: FakeWeb, firecrawl: FakeFirecrawl
 ) -> None:
     blocked = web.serve("/news", page("cf_turnstile.html", 403, CF_HEADERS))
-    article = web.serve("/article", page("article.html"))
+    # Another site: the blocked one is now on a cool-down for the plain download.
+    article = web.serve("/article", page("article.html"), host="localhost")
     firecrawl.quota_exhausted = True
     scrape(client, blocked)
 
