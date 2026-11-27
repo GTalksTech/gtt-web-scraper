@@ -73,7 +73,8 @@ class Failure:
 
 
 class UnknownFetcher(ValueError):
-    """A Caller forced a Fetcher that isn't on the Ladder."""
+    """A Caller forced a Fetcher that isn't on the Ladder, or a Site Adapter that isn't
+    enabled."""
 
 
 # Responses that mean a site is blocking the home connection.
@@ -134,7 +135,8 @@ class Router:
         forceable = self.fetchers + self.site_adapters
         if forced is not None and forced not in forceable:
             raise UnknownFetcher(
-                f"unknown Fetcher {forced!r}; expected one of: {', '.join(forceable)}"
+                f"unknown Fetcher or Site Adapter {forced!r};"
+                f" expected one of: {', '.join(forceable)}"
             )
         cached = self._cache.get(url, max_age_s)
         if cached is not None:

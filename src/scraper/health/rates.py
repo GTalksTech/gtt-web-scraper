@@ -55,6 +55,21 @@ _SCHEMA = (
 )
 
 
+def _carry_over_fetcher_outcomes(db: sqlite3.Connection) -> None:
+    """Move the Fetchers' outcomes from the table the previous version kept them in
+    (Fetchers only) into `outcomes`, once, so an upgrade doesn't reset their rates."""
+    old = db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'fetcher_outcomes'"
+    ).fetchone()
+    if old is None:
+        return
+    db.execute(
+        "INSERT INTO outcomes (subject, name, at, outcome, reason)"
+        " SELECT 'fetcher', fetcher, at, outcome, reason FROM fetcher_outcomes"
+    )
+    db.execute("DROP TABLE fetcher_outcomes")
+
+
 @dataclass(frozen=True)
 class SuccessRate:
     subject: Subject
@@ -104,6 +119,7 @@ class SuccessRates:
         with connect(self._path) as db:
             for statement in _SCHEMA:
                 db.execute(statement)
+            _carry_over_fetcher_outcomes(db)
 
     def record(
         self, subject: Subject, name: str, outcome: Outcome, reason: str | None = None

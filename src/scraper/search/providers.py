@@ -35,6 +35,7 @@ class SearchResult:
 # Why a Provider gave nothing, as its success rate records it. A Provider whose quota
 # is used up, or whose key isn't set, is unavailable rather than failing.
 PROVIDER_ERROR = "provider_error"
+RATE_LIMITED = "rate_limited"
 NOT_CONFIGURED = "not_configured"
 
 
@@ -82,9 +83,10 @@ class _HttpProvider:
             raise ProviderError(f"unreachable: {exc}") from exc
         status = response.status_code
         if status in self.quota_statuses:
-            raise ProviderError(
-                f"quota exhausted or rate-limited (HTTP {status})", QUOTA_EXHAUSTED
-            )
+            # A 429 can be a per-minute limit that passes on its own, so it counts as a
+            # failure; only the other statuses say the quota or credits are used up.
+            reason = RATE_LIMITED if status == 429 else QUOTA_EXHAUSTED
+            raise ProviderError(f"quota exhausted or rate-limited (HTTP {status})", reason)
         if status != 200:
             raise ProviderError(f"answered HTTP {status}: {response.text[:200]}")
         try:
@@ -204,7 +206,7 @@ class _DuckDuckGoPage(Duckduckgo):
     def request(self, *args: Any, **kwargs: Any) -> Any:
         response = self.http_client.request(*args, **kwargs)
         if response.status_code in (202, 429):
-            raise ProviderError(f"rate-limited (HTTP {response.status_code})")
+            raise ProviderError(f"rate-limited (HTTP {response.status_code})", RATE_LIMITED)
         if response.status_code != 200:
             raise ProviderError(f"answered HTTP {response.status_code}")
         return response.text

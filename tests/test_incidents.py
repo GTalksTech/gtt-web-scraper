@@ -553,6 +553,39 @@ def test_a_canary_search_failing_differently_another_day_has_the_same_fingerprin
     )
 
 
+def test_checks_only_one_side_made_do_not_decide_a_deploy() -> None:
+    # The candidate asks a Provider the live version doesn't have: its extra passes
+    # mustn't make up for a page it broke.
+    extra = [searched(q, "brave") for q in QUERIES]
+    candidate = replace_result(
+        healthy_results(), GOOD_URLS[0], got(entry(GOOD_URLS[0]), "rejected", "too_short")
+    )
+
+    decision = judge_deploy(
+        with_searches(healthy_results(), healthy_searches()),
+        with_searches(candidate, healthy_searches() + extra),
+        NEW_IMAGE,
+    )
+
+    assert not decision.promote
+    assert decision.incidents[0].evidence["total"] == 15
+
+
+def test_a_live_version_that_checked_search_differently_still_compares_on_pages() -> None:
+    # An older live version can't be asked Provider by Provider: its searches went
+    # through the whole chain, which the candidate's per-Provider checks don't match.
+    chain = [searched(q, None) for q in QUERIES]  # type: ignore[arg-type]
+
+    decision = judge_deploy(
+        with_searches(healthy_results(), chain),
+        with_searches(healthy_results(), healthy_searches()),
+        NEW_IMAGE,
+    )
+
+    assert decision.promote
+    assert decision.summary == "promoting sha256:new: 7 of 7 passing, live 7 of 7"
+
+
 def test_a_candidate_whose_searches_regress_is_kept_out() -> None:
     worse = healthy_searches()
     worse[2] = searched(QUERIES[0], "tavily", "failed", "tavily: answered HTTP 500")

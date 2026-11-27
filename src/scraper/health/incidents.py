@@ -180,11 +180,10 @@ def _canary_evidence(
 # How each subject is named in an Incident's effect, and what its attempts are.
 _TITLES = {"fetcher": "Fetcher", "provider": "Search Provider", "adapter": "Site Adapter"}
 _ATTEMPTS = {"fetcher": "attempts", "provider": "searches", "adapter": "attempts"}
-# What a quota running out costs a Caller.
+# What a quota running out costs a Caller (Site Adapters have none).
 _QUOTA_EFFECT = {
     "fetcher": "pages that need it fail",
     "provider": "searches skip it",
-    "adapter": "pages fall back to the Ladder",
 }
 
 
@@ -243,11 +242,11 @@ def judge_deploy(
     live: CanaryReport | None, candidate: CanaryReport | None, candidate_image: str
 ) -> DeployDecision:
     """Whether a new version (`candidate_image`) may take traffic: only if it passes at
-    least as much of the Canary Set (pages and searches) as the live service. A live
-    service that couldn't be checked counts as passing nothing; a candidate that
-    couldn't be checked is kept out."""
-    live_passed = live.passed if live is not None else 0
-    live_score = f"{live_passed} of {live.total}" if live is not None else "unchecked"
+    least as much of the Canary Set (pages and searches) as the live service. Only the
+    checks both made are compared: the two can list different Search Providers (a
+    Provider added or replaced, or an older live version that searched through the
+    whole chain). A live service that couldn't be checked counts as passing nothing;
+    a candidate that couldn't be checked is kept out."""
     if candidate is None:
         return DeployDecision(
             promote=False,
@@ -255,17 +254,31 @@ def judge_deploy(
             incidents=[
                 _deploy_rejected(
                     "it didn't answer the Canary Set",
-                    {"candidateImage": candidate_image, "livePassed": live_passed},
+                    {
+                        "candidateImage": candidate_image,
+                        "livePassed": live.passed if live is not None else 0,
+                    },
                 )
             ],
         )
-    score = f"{candidate.passed} of {candidate.total}"
-    if candidate.passed >= live_passed:
+    checks = candidate.checks
+    if live is not None:
+        shared = {c.key for c in live.checks}
+        checks = [c for c in checks if c.key in shared]
+    candidate_passed = sum(c.passed for c in checks)
+    live_ok = (
+        {c.key for c in live.checks if c.passed} & {c.key for c in checks}
+        if live is not None
+        else set()
+    )
+    live_passed = len(live_ok)
+    score = f"{candidate_passed} of {len(checks)}"
+    live_score = f"{live_passed} of {len(checks)}" if live is not None else "unchecked"
+    if candidate_passed >= live_passed:
         return DeployDecision(
             promote=True, summary=f"promoting {candidate_image}: {score} passing, live {live_score}"
         )
-    live_ok = {c.key for c in live.checks if c.passed} if live is not None else set()
-    regressions = [c.evidence() for c in candidate.checks if not c.passed and c.key in live_ok]
+    regressions = [c.evidence() for c in checks if not c.passed and c.key in live_ok]
     return DeployDecision(
         promote=False,
         summary=f"kept out {candidate_image}: {score} passing, live {live_score}",
@@ -274,9 +287,9 @@ def judge_deploy(
                 f"it did worse on the Canary Set ({score} passing, live {live_score})",
                 {
                     "candidateImage": candidate_image,
-                    "candidatePassed": candidate.passed,
+                    "candidatePassed": candidate_passed,
                     "livePassed": live_passed,
-                    "total": candidate.total,
+                    "total": len(checks),
                     "regressions": regressions,
                 },
             )

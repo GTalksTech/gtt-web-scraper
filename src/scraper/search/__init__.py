@@ -42,8 +42,11 @@ __all__ = [
     "UnknownProvider",
 ]
 
-# The reason a Provider's answer with no results counts as a failure.
+# Why a Provider's answer gave nothing usable, beside the reasons a ProviderError gives.
+# No results counts against the Provider's success rate; results the Source List
+# blocks entirely don't (the Provider worked).
 NO_RESULTS = "no_results"
+ALL_BLOCKED = "all_blocked"
 
 
 class UnknownProvider(ValueError):
@@ -55,7 +58,10 @@ class ProviderAttempt:
     """A Search Provider that was asked and gave nothing usable, and why."""
 
     provider: str
-    error: str
+    error: str  # for the Caller to read
+    # For code to read: quota_exhausted, not_configured, rate_limited, no_results,
+    # all_blocked or provider_error.
+    reason: str
 
 
 @dataclass(frozen=True)
@@ -125,13 +131,13 @@ class Searcher:
             try:
                 results = provider.search(query, limit)
             except ProviderError as exc:
-                attempts.append(ProviderAttempt(provider.name, str(exc)))
+                attempts.append(ProviderAttempt(provider.name, str(exc), exc.reason))
                 unavailable = exc.reason in (QUOTA_EXHAUSTED, NOT_CONFIGURED)
                 outcome: Outcome = "unavailable" if unavailable else "failure"
                 self._rates.record("provider", provider.name, outcome, exc.reason)
                 continue
             if not results:
-                attempts.append(ProviderAttempt(provider.name, "found no results"))
+                attempts.append(ProviderAttempt(provider.name, "found no results", NO_RESULTS))
                 self._rates.record("provider", provider.name, "failure", NO_RESULTS)
                 continue
             # The Provider worked, whatever the Source List then makes of its results.
@@ -139,7 +145,9 @@ class Searcher:
             shown = self._present(results, limit, self._clock())
             if not shown:
                 attempts.append(
-                    ProviderAttempt(provider.name, "found only results from blocked domains")
+                    ProviderAttempt(
+                        provider.name, "found only results from blocked domains", ALL_BLOCKED
+                    )
                 )
                 continue
             self._cache.put(query, limit, results)

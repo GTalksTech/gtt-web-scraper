@@ -23,6 +23,7 @@ from typing import Any, Final, Literal, Protocol, get_args
 
 import yaml
 
+from ..search.providers import NOT_CONFIGURED
 from ..sites import site_of
 
 Expected = Literal["accepted", "suspect", "rejected"]
@@ -112,7 +113,8 @@ def _search_entry(path: Path, item: dict[str, Any]) -> SearchCanary:
         )
     if "/" in expect or "." not in expect:
         raise ValueError(f"{path}: {query!r}: expect must be a domain, like docs.python.org")
-    return SearchCanary(query=query, expect=expect, provider=item.get("provider") or None)
+    provider = str(item.get("provider") or "").strip() or None
+    return SearchCanary(query=query, expect=expect, provider=provider)
 
 
 @dataclass(frozen=True)
@@ -285,7 +287,10 @@ def run_canary(canary: CanarySet, service: Service) -> CanaryReport:
     for search in canary.searches:
         # Each Provider in turn; the whole chain if the service didn't say which it has.
         asked: list[str | None] = [search.provider] if search.provider else [*providers] or [None]
-        searches += [_search(search, provider, service) for provider in asked]
+        for provider in asked:
+            check = _search(search, provider, service)
+            if check is not None:
+                searches.append(check)
     return CanaryReport(service.name, pages, searches)
 
 
@@ -344,7 +349,11 @@ def _providers(service: Service) -> list[str]:
     return [str(r["provider"]) for r in body.get("providers") or [] if r.get("provider")]
 
 
-def _search(canary: SearchCanary, provider: str | None, service: Service) -> SearchCheck:
+def _search(
+    canary: SearchCanary, provider: str | None, service: Service
+) -> SearchCheck | None:
+    """What asking `service` for `canary` through `provider` found, or None when that
+    Provider has no key set: leaving one out is a choice, not a breakage."""
     request: dict[str, Any] = {"query": canary.query, "limit": SEARCH_LIMIT}
     if provider is not None:
         request["provider"] = provider
@@ -359,11 +368,10 @@ def _search(canary: SearchCanary, provider: str | None, service: Service) -> Sea
         detail = f"no result from {canary.expect} among {len(urls)}"
         return SearchCheck(canary, provider, "missing", detail, urls)
     if status == 502:
-        errors = "; ".join(
-            f"{a.get('provider')}: {a.get('error')}"
-            for a in body.get("attempts") or []
-            if isinstance(a, dict)
-        )
+        attempts = [a for a in body.get("attempts") or [] if isinstance(a, dict)]
+        if provider is not None and [a.get("reason") for a in attempts] == [NOT_CONFIGURED]:
+            return None
+        errors = "; ".join(f"{a.get('provider')}: {a.get('error')}" for a in attempts)
         return SearchCheck(canary, provider, "failed", errors or str(body.get("error") or ""), [])
     error = body.get("error") or body.get("detail") or "no error given"
     return SearchCheck(canary, provider, ERROR, f"HTTP {status}: {error}", [])

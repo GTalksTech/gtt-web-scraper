@@ -8,6 +8,7 @@ test_site_adapters.py, beside their fake APIs.)
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -176,6 +177,27 @@ def test_rates_survive_a_restart(config: Config, client: TestClient, web: FakeWe
     assert rates(restarted)["plain"]["attempts"] == 1
 
 
+def test_fetcher_rates_kept_by_the_previous_version_carry_over(
+    config: Config, clock: FakeClock
+) -> None:
+    # The version before Search Provider and Site Adapter rates kept Fetchers' alone.
+    with sqlite3.connect(config.cache.path) as db:
+        db.execute(
+            "CREATE TABLE fetcher_outcomes"
+            " (fetcher TEXT NOT NULL, at REAL NOT NULL, outcome TEXT NOT NULL, reason TEXT)"
+        )
+        db.execute(
+            "INSERT INTO fetcher_outcomes VALUES ('plain', ?, 'failure', 'challenge')",
+            (clock(),),
+        )
+
+    client = TestClient(create_app(config, clock=clock))
+
+    assert (rates(client)["plain"]["attempts"], rates(client)["plain"]["successes"]) == (1, 0)
+    # Read once: a second start doesn't count it again.
+    assert rates(TestClient(create_app(config, clock=clock)))["plain"]["attempts"] == 1
+
+
 # ── rolling success rates per Search Provider ──────────────────────────────
 
 
@@ -209,13 +231,26 @@ def test_each_search_providers_attempts_and_successes_are_counted(
 def test_a_search_providers_exhausted_quota_is_counted_apart(
     client: TestClient, providers: FakeSearchProviders
 ) -> None:
-    providers.run_out("tinyfish")
+    providers.fail("tinyfish")
+    providers.run_out("exa")  # Exa says so with a 402
+    search(client, "raspberry pi 5")
+
+    exa = provider_rates(client)["exa"]
+
+    assert (exa["attempts"], exa["unavailable"]) == (0, 1)
+    assert exa["lastUnavailable"] == "quota_exhausted"
+
+
+def test_a_search_provider_that_rate_limits_is_failing_not_out_of_quota(
+    client: TestClient, providers: FakeSearchProviders
+) -> None:
+    # A 429 can be a per-minute limit: one burst mustn't read as a used-up quota.
+    providers.run_out("tinyfish")  # TinyFish says so with a 429
     search(client, "raspberry pi 5")
 
     tinyfish = provider_rates(client)["tinyfish"]
 
-    assert (tinyfish["attempts"], tinyfish["unavailable"]) == (0, 1)
-    assert tinyfish["lastUnavailable"] == "quota_exhausted"
+    assert (tinyfish["attempts"], tinyfish["successes"], tinyfish["unavailable"]) == (1, 0, 0)
 
 
 def test_a_search_provider_without_a_key_is_unavailable_not_failing(
@@ -373,6 +408,21 @@ def test_a_canary_search_through_a_failing_provider_fails_with_its_error(
     [failure] = report.search_failures
     assert (failure.provider, failure.outcome) == ("tavily", "failed")
     assert "quota exhausted" in failure.detail
+
+
+def test_a_canary_search_skips_a_provider_with_no_key_set(
+    config: Config, clock: FakeClock, providers: FakeSearchProviders
+) -> None:
+    # Leaving a Provider's key out is a choice, not a breakage: nothing to report.
+    config.search.tinyfish_api_key = None
+    client = TestClient(create_app(config, clock=clock))
+    for name in PROVIDERS:
+        providers.answer(name, [DOCS])
+
+    report = run_canary(CanarySet(searches=[SQLITE]), ClientService(client))
+
+    assert [s.provider for s in report.searches] == ["exa", "tavily", "duckduckgo"]
+    assert report.search_failures == []
 
 
 def test_a_canary_page_forced_through_a_site_adapter_is_judged_on_the_adapter_alone(

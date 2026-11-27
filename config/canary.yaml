@@ -124,7 +124,10 @@
 #   provider:  optional; the one Search Provider to ask. Omit it (the usual) and the
 #              query is asked of every Search Provider in config/scraper.yaml, one at
 #              a time and live, so a failing Provider can't hide behind the next.
-# Pick queries whose top results have been the same site for years.
+#              A Provider with no key set is skipped.
+# Pick queries whose top results have been the same site for years. Each one costs
+# every Provider one search of its free quota a day, and two more per deploy (live and
+# candidate), so keep the list short.
 - query: python sqlite3 module documentation
   expect: docs.python.org
 - query: Raspberry Pi single-board computer wikipedia

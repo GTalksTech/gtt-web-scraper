@@ -52,7 +52,7 @@ def test_a_failing_provider_passes_the_query_to_the_next(
     assert body["data"]["web"][0]["description"] == "What exa says about result 1."
     assert body["provider"] == "exa"
     assert body["attempts"] == [
-        {"provider": "tinyfish", "error": body["attempts"][0]["error"]}
+        {"provider": "tinyfish", "error": body["attempts"][0]["error"], "reason": "provider_error"}
     ]
     assert "HTTP 500" in body["attempts"][0]["error"]
     assert providers.calls() == ["tinyfish", "exa"]
@@ -118,7 +118,11 @@ def test_a_provider_without_its_key_is_skipped_without_being_called(
     assert status == 200
     assert body["provider"] == "exa"
     assert body["attempts"] == [
-        {"provider": "tinyfish", "error": "not configured: TINYFISH_API_KEY is not set"}
+        {
+            "provider": "tinyfish",
+            "error": "not configured: TINYFISH_API_KEY is not set",
+            "reason": "not_configured",
+        }
     ]
     assert providers.calls() == ["exa"]
 
@@ -132,7 +136,9 @@ def test_a_provider_that_finds_nothing_passes_the_query_on(
 
     assert status == 200
     assert body["provider"] == "exa"
-    assert body["attempts"] == [{"provider": "tinyfish", "error": "found no results"}]
+    assert body["attempts"] == [
+        {"provider": "tinyfish", "error": "found no results", "reason": "no_results"}
+    ]
 
 
 def test_every_provider_failing_is_an_explicit_failure_naming_each_error(
