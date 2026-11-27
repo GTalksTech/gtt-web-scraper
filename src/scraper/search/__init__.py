@@ -57,9 +57,8 @@ class SearchFailure:
 class Searcher:
     def __init__(self, config: Config, clock: Callable[[], float] = time.time) -> None:
         self._providers: list[SearchProvider] = build_providers(config.search)
-        self._cache = SearchCache(
-            config.cache.resolved_path(), config.search.cache_max_age_s, clock
-        )
+        self.cache_max_age_s = config.search.cache_max_age_s
+        self._cache = SearchCache(config.cache.resolved_path(), self.cache_max_age_s, clock)
 
     @property
     def providers(self) -> list[str]:
@@ -67,8 +66,9 @@ class Searcher:
         return [p.name for p in self._providers]
 
     def search(self, query: str, limit: int) -> SearchSuccess | SearchFailure:
-        """Up to `limit` results for `query`: from the cache if the same search was made
-        in the last 24 hours, else from the first Provider that answers with results."""
+        """Up to `limit` results for `query`: from the cache if the same query was
+        searched recently (24 hours by default) for at least as many results, else from
+        the first Provider that answers with results."""
         cached = self._cache.get(query, limit)
         if cached is not None and cached.results:
             return SearchSuccess(
@@ -93,5 +93,6 @@ class Searcher:
 
     def _present(self, results: list[SearchResult], limit: int) -> list[SearchResult]:
         """A Provider's results as the Caller sees them. Source List re-ranking and
-        Published dates (ticket #13) go here."""
+        Published dates (ticket #13) go here; each result already carries the date its
+        Provider reported, if any, unnormalised and not yet shown to Callers."""
         return results[:limit]

@@ -40,19 +40,13 @@ class SearchProvider(Protocol):
     def search(self, query: str, limit: int) -> list[SearchResult]: ...
 
 
-# Responses that mean a Provider's free allowance, credits or rate limit is used up.
-_QUOTA_STATUSES = {
-    "tinyfish": (402, 429),  # 402 no credits; 429 per-minute or daily allowance
-    "exa": (402, 429),  # 402 out of credits or over budget; 429 rate limit
-    "tavily": (429, 432, 433),  # 432 plan limit; 433 pay-as-you-go limit; 429 rate limit
-}
-
-
 class _HttpProvider:
     """A Provider reached over its JSON API with a key."""
 
     name: str
     key_env: str
+    # Responses that mean the Provider's free allowance, credits or rate limit is used up.
+    quota_statuses: tuple[int, ...]
 
     def __init__(self, base_url: str, api_key: str | None, timeout_s: float) -> None:
         self._base_url = base_url.rstrip("/")
@@ -75,7 +69,7 @@ class _HttpProvider:
         except RequestException as exc:
             raise ProviderError(f"unreachable: {exc}") from exc
         status = response.status_code
-        if status in _QUOTA_STATUSES[self.name]:
+        if status in self.quota_statuses:
             raise ProviderError(f"quota exhausted or rate-limited (HTTP {status})")
         if status != 200:
             raise ProviderError(f"answered HTTP {status}: {response.text[:200]}")
@@ -101,6 +95,7 @@ class TinyFish(_HttpProvider):
 
     name = "tinyfish"
     key_env = "TINYFISH_API_KEY"
+    quota_statuses = (402, 429)  # 402 no credits; 429 per-minute or daily allowance
 
     def search(self, query: str, limit: int) -> list[SearchResult]:
         body = self._call(
@@ -124,6 +119,7 @@ class Exa(_HttpProvider):
 
     name = "exa"
     key_env = "EXA_API_KEY"
+    quota_statuses = (402, 429)  # 402 out of credits or over budget; 429 rate limit
 
     def search(self, query: str, limit: int) -> list[SearchResult]:
         body = self._call(
@@ -159,6 +155,8 @@ class Tavily(_HttpProvider):
 
     name = "tavily"
     key_env = "TAVILY_API_KEY"
+    # 432 plan limit; 433 pay-as-you-go limit; 429 rate limit
+    quota_statuses = (429, 432, 433)
 
     def search(self, query: str, limit: int) -> list[SearchResult]:
         body = self._call(
@@ -185,8 +183,9 @@ class Tavily(_HttpProvider):
 
 
 class _DuckDuckGoPage(Duckduckgo):
-    """ddgs's DuckDuckGo engine (the HTML results page), but saying why a page didn't
-    come back instead of returning nothing: DuckDuckGo answers 202 when it rate-limits."""
+    """ddgs's DuckDuckGo client (it reads the HTML results page), but saying why a page
+    didn't come back instead of returning nothing: DuckDuckGo answers 202 when it
+    rate-limits."""
 
     def request(self, *args: Any, **kwargs: Any) -> Any:
         response = self.http_client.request(*args, **kwargs)
@@ -208,10 +207,10 @@ class DuckDuckGo:
         self._timeout_s = timeout_s
 
     def search(self, query: str, limit: int) -> list[SearchResult]:
-        engine = _DuckDuckGoPage(timeout=max(1, round(self._timeout_s)))
-        engine.search_url = self._search_url
+        client = _DuckDuckGoPage(timeout=max(1, round(self._timeout_s)))
+        client.search_url = self._search_url
         try:
-            found = engine.search(query) or []
+            found = client.search(query) or []
         except DDGSException as exc:
             raise ProviderError(f"unreachable: {exc}") from exc
         return [

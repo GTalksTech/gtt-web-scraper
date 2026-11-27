@@ -190,6 +190,25 @@ def test_results_are_cached_for_24_hours(
     assert later["provider"] == "exa"
 
 
+def test_a_cached_search_serves_smaller_limits_and_a_larger_one_searches_again(
+    client: TestClient, providers: FakeSearchProviders
+) -> None:
+    providers.answer("tinyfish", hits("tinyfish", 12))
+
+    search_v2(client, "pi 5 nvme boot")  # limit 10
+    v1 = client.post("/v1/search", json={"query": "pi 5 nvme boot"}).json()  # limit 5
+
+    assert v1["cacheState"] == "hit"
+    assert len(v1["data"]) == 5
+    assert providers.queries["tinyfish"] == ["pi 5 nvme boot"]
+
+    _, more = search_v2(client, "pi 5 nvme boot", limit=12)
+
+    assert more["cacheState"] == "miss"
+    assert len(more["data"]["web"]) == 12
+    assert len(providers.queries["tinyfish"]) == 2
+
+
 def test_a_failed_search_is_not_cached(
     client: TestClient, providers: FakeSearchProviders
 ) -> None:
@@ -252,7 +271,6 @@ def test_v1_search_returns_results_as_a_list(
             "url": "https://example.org/review",
             "snippet": "A long review.",
             "provider": "tinyfish",
-            "publishedDate": "2026-10-14",
         }
     ]
 

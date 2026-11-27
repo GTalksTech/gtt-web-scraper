@@ -3,9 +3,8 @@ port as the Firecrawl-compatible API.
 
 Each tool is added by its own `add_*_tool` function called from `create_mcp_server`:
 `fetch` (a page, through the Router) and `search` (a query, through the Searcher).
-The server is stateless and
-answers in plain JSON: no session survives between calls, so a redeploy on pi5 never
-strands a connected Claude Code session.
+The server is stateless and answers in plain JSON: no session survives between calls,
+so a redeploy on pi5 never strands a connected Claude Code session.
 """
 
 # No `from __future__ import annotations`: FastMCP reads the tool's annotations at
@@ -25,13 +24,12 @@ from pydantic import Field
 from .responses import (
     UNKNOWN_FETCHER,
     attempt_json,
+    cached_at_iso,
     confidence,
     failure_code,
     failure_error,
-    SEARCH_FAILED,
-    iso_utc,
     provider_attempt_json,
-    search_failure_error,
+    search_failure_json,
     search_result_json,
 )
 from .router import Failure, Router, Success, UnknownFetcher
@@ -124,6 +122,7 @@ def add_fetch_tool(server: FastMCP, router: Router) -> None:
 
 def add_search_tool(server: FastMCP, searcher: Searcher) -> None:
     providers = ", ".join(searcher.providers)
+    cache_hours = searcher.cache_max_age_s / 3600
 
     @server.tool(
         title="Search the web",
@@ -131,8 +130,8 @@ def add_search_tool(server: FastMCP, searcher: Searcher) -> None:
             "Search the web: a ranked list of results, each with title, URL, snippet and "
             "the Search Provider that found it. Providers are tried in order "
             f"({providers}); a failing one passes the query to the next. Repeated "
-            "searches are served from a 24-hour cache. Fails explicitly, naming each "
-            "Provider's error, rather than returning an empty list."
+            f"searches are served from a {cache_hours:g}-hour cache. Fails explicitly, "
+            "naming each Provider's error, rather than returning an empty list."
         ),
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
     )
@@ -144,20 +143,13 @@ def add_search_tool(server: FastMCP, searcher: Searcher) -> None:
     ) -> CallToolResult:
         outcome = await anyio.to_thread.run_sync(lambda: searcher.search(query, limit))
         if isinstance(outcome, SearchFailure):
-            error = search_failure_error(query, outcome)
-            return _error(
-                error,
-                {
-                    "code": SEARCH_FAILED,
-                    "error": error,
-                    "attempts": [provider_attempt_json(a) for a in outcome.attempts],
-                },
-            )
+            failure = search_failure_json(query, outcome)
+            return _error(failure["error"], failure)
         return _search_success(outcome)
 
 
 def _search_success(outcome: SearchSuccess) -> CallToolResult:
-    cached_at = None if outcome.cached_at is None else iso_utc(outcome.cached_at)
+    cached_at = cached_at_iso(outcome.cached_at)
     data: dict[str, Any] = {
         "results": [search_result_json(r) for r in outcome.results],
         "provider": outcome.provider,
@@ -169,8 +161,6 @@ def _search_success(outcome: SearchSuccess) -> CallToolResult:
         lines.append(f"Cached at: {cached_at}")
     for i, r in enumerate(outcome.results, 1):
         lines += ["", f"{i}. {r.title}", f"   {r.url}"]
-        if r.published:
-            lines.append(f"   Published: {r.published}")
         if r.snippet:
             lines.append(f"   {r.snippet}")
     text = "\n".join(lines)
@@ -179,7 +169,7 @@ def _search_success(outcome: SearchSuccess) -> CallToolResult:
 
 def _fetch_success(url: str, outcome: Success) -> CallToolResult:
     page = outcome.page
-    cached_at = None if outcome.cached_at is None else iso_utc(outcome.cached_at)
+    cached_at = cached_at_iso(outcome.cached_at)
     data: dict[str, Any] = {
         "markdown": page.markdown,
         "title": page.title,

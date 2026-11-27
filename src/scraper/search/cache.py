@@ -1,7 +1,10 @@
 """The search cache: a query's results, kept in SQLite (the same file as the page cache)
 so repeated searches don't spend free Provider quota.
 
-Only a successful search is stored. Cache trouble (a locked, full or damaged database)
+One entry per query, whatever the limit: a search for up to N results is served from an
+entry made for N or more (Hermes's v1 default of 5 and Claude Code's 10 share one), and
+a search for more replaces it. Only a successful search is stored, and expired entries
+are dropped as new ones are written. Cache trouble (a locked, full or damaged database)
 never costs the Caller a search: it is logged and the query goes to the Providers.
 """
 
@@ -21,11 +24,11 @@ log = logging.getLogger(__name__)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS searches (
-    query TEXT NOT NULL,
+    query TEXT PRIMARY KEY,
+    -- The limit the search was made with; it may have found fewer.
     max_results INTEGER NOT NULL,
     searched_at REAL NOT NULL,
-    results TEXT NOT NULL,
-    PRIMARY KEY (query, max_results)
+    results TEXT NOT NULL
 )
 """
 
@@ -51,37 +54,37 @@ class SearchCache:
             db.execute(_SCHEMA)
 
     def get(self, query: str, limit: int) -> CachedSearch | None:
+        """The cached results for `query` if they are recent and were searched for at
+        least `limit` results (all of them; the Caller trims to its limit)."""
         try:
             with connect(self._path) as db:
                 row = db.execute(
-                    "SELECT searched_at, results FROM searches"
-                    " WHERE query = ? AND max_results = ?",
-                    (cache_key(query), limit),
+                    "SELECT max_results, searched_at, results FROM searches WHERE query = ?",
+                    (cache_key(query),),
                 ).fetchone()
         except sqlite3.Error:
             log.exception("search cache unreadable; searching %r live", query)
             return None
         if row is None:
             return None
-        searched_at, results = row
-        if self._clock() - searched_at > self._max_age_s:
+        max_results, searched_at, results = row
+        if max_results < limit or self._clock() - searched_at > self._max_age_s:
             return None
         return CachedSearch(
             results=[SearchResult(**r) for r in json.loads(results)], searched_at=searched_at
         )
 
     def put(self, query: str, limit: int, results: list[SearchResult]) -> None:
+        now = self._clock()
         try:
             with connect(self._path) as db:
                 db.execute(
+                    "DELETE FROM searches WHERE searched_at < ?", (now - self._max_age_s,)
+                )
+                db.execute(
                     "INSERT OR REPLACE INTO searches (query, max_results, searched_at, results)"
                     " VALUES (?, ?, ?, ?)",
-                    (
-                        cache_key(query),
-                        limit,
-                        self._clock(),
-                        json.dumps([asdict(r) for r in results]),
-                    ),
+                    (cache_key(query), limit, now, json.dumps([asdict(r) for r in results])),
                 )
         except sqlite3.Error:
             log.exception("search cache unwritable; %r not cached", query)

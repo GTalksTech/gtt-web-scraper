@@ -10,7 +10,7 @@ HTTP 502 with success: false, so a Caller never mistakes it for content.
 
 Search takes a query and a limit and answers with title, URL and description per result
 (v1: a list in `data`; v2: `data.web`), plus our extras: each result's `provider` and
-`publishedDate`, and the search's `provider`, `cachedAt` and failed `attempts`. Search
+`snippet`, and the search's `provider`, `cacheState`, `cachedAt` and failed `attempts`. Search
 never calls Firecrawl. When every Search Provider fails, it is an HTTP 502 with
 success: false naming each Provider's error, never an empty list.
 
@@ -32,13 +32,13 @@ from .mcp_server import create_mcp_server, serve_mcp
 from .responses import (
     UNKNOWN_FETCHER,
     attempt_json,
+    cached_at_iso,
     confidence,
     failure_code,
     failure_error,
-    SEARCH_FAILED,
     iso_utc,
     provider_attempt_json,
-    search_failure_error,
+    search_failure_json,
     search_result_json,
 )
 from .router import Failure, Router, UnknownFetcher
@@ -58,6 +58,10 @@ class ScrapeRequest(BaseModel):
     # Our extra: force a live fetch to use only this Fetcher ("plain" or "paid"),
     # skipping the rest of the Ladder and any Site Adapter. A cached copy is still served.
     fetcher: str | None = None
+
+
+# Puts the list of web results where a Firecrawl API version expects them in `data`.
+WebShape = Callable[[list[dict[str, Any]]], Any]
 
 
 class SearchRequest(BaseModel):
@@ -132,19 +136,12 @@ def create_app(
             }
         )
 
-    def search(request: SearchRequest, default_limit: int, shape: Callable[
-        [list[dict[str, Any]]], Any
-    ]) -> JSONResponse:
+    def search(request: SearchRequest, default_limit: int, shape: WebShape) -> JSONResponse:
         outcome = searcher.search(request.query, request.limit or default_limit)
         if isinstance(outcome, SearchFailure):
             return JSONResponse(
                 status_code=502,
-                content={
-                    "success": False,
-                    "code": SEARCH_FAILED,
-                    "error": search_failure_error(request.query, outcome),
-                    "attempts": [provider_attempt_json(a) for a in outcome.attempts],
-                },
+                content={"success": False, **search_failure_json(request.query, outcome)},
             )
         return _search_success(outcome, shape)
 
@@ -161,11 +158,9 @@ def create_app(
     return app
 
 
-def _search_success(
-    outcome: SearchSuccess, shape: Callable[[list[dict[str, Any]]], Any]
-) -> JSONResponse:
+def _search_success(outcome: SearchSuccess, shape: WebShape) -> JSONResponse:
     web = [{"description": r.snippet, **search_result_json(r)} for r in outcome.results]
-    cached_at = None if outcome.cached_at is None else iso_utc(outcome.cached_at)
+    cached_at = cached_at_iso(outcome.cached_at)
     return JSONResponse(
         {
             "success": True,

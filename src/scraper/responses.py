@@ -16,7 +16,8 @@ Confidence = Literal["accepted", "possibly_partial"]
 FailureCode = Literal["UNKNOWN_FETCHER", "FETCHER_UNAVAILABLE", "SCRAPE_REJECTED"]
 UNKNOWN_FETCHER: FailureCode = "UNKNOWN_FETCHER"
 # Why a search returned no results: every Search Provider failed.
-SEARCH_FAILED = "SEARCH_FAILED"
+SearchFailureCode = Literal["SEARCH_FAILED"]
+SEARCH_FAILED: SearchFailureCode = "SEARCH_FAILED"
 
 
 def attempt_json(attempt: Attempt) -> dict[str, Any]:
@@ -55,13 +56,13 @@ def failure_error(url: str, failure: Failure) -> str:
 
 def search_result_json(result: SearchResult) -> dict[str, Any]:
     """One search result as both interfaces show it. The API also writes the snippet
-    as Firecrawl's `description`."""
+    as Firecrawl's `description`. (The Published date joins it with ticket #13, once
+    it is normalised.)"""
     return {
         "title": result.title,
         "url": result.url,
         "snippet": result.snippet,
         "provider": result.provider,
-        "publishedDate": result.published,
     }
 
 
@@ -73,6 +74,20 @@ def search_failure_error(query: str, failure: SearchFailure) -> str:
     """One sentence on why a search came back with nothing, naming each Provider's error."""
     tried = "; ".join(f"{a.provider}: {a.error}" for a in failure.attempts)
     return f"Every Search Provider failed for {query!r}. {tried}."
+
+
+def search_failure_json(query: str, failure: SearchFailure) -> dict[str, Any]:
+    """The failure's code, sentence and per-Provider errors, as both interfaces show them."""
+    return {
+        "code": SEARCH_FAILED,
+        "error": search_failure_error(query, failure),
+        "attempts": [provider_attempt_json(a) for a in failure.attempts],
+    }
+
+
+def cached_at_iso(cached_at: float | None) -> str | None:
+    """When a cached answer was made, as Firecrawl writes times; None for a live one."""
+    return None if cached_at is None else iso_utc(cached_at)
 
 
 def iso_utc(timestamp: float) -> str:
