@@ -8,6 +8,8 @@ import lxml.html
 import trafilatura
 from lxml import etree
 
+from . import pdf
+
 
 @dataclass(frozen=True)
 class FetchedPage:
@@ -38,6 +40,24 @@ def build_page(
         or ""
     )
     return page_with_markdown(requested_url, final_url, status, headers, html, markdown)
+
+
+def build_pdf_page(
+    requested_url: str, final_url: str, status: int, headers: dict[str, str], body: bytes
+) -> FetchedPage:
+    """Extract a PDF response's text as markdown. The page has no HTML; its title and
+    Published date come from the PDF's document info."""
+    text = pdf.extract(body)
+    return page_with_markdown(
+        requested_url,
+        final_url,
+        status,
+        headers,
+        html="",
+        markdown=text.markdown,
+        title=text.title,
+        published=text.published,
+    )
 
 
 def page_with_markdown(

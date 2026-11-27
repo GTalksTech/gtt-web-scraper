@@ -1,0 +1,63 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+5 0 obj
+<< /Length 1525 >>
+stream
+BT
+/F1 11 Tf
+14 TL
+50 780 Td
+(GTT-7 Environmental Sensor Datasheet) Tj T*
+(Overview) Tj T*
+(The GTT-7 measures temperature, relative humidity and barometric pressure) Tj T*
+(on a single 3 by 3 millimetre package, and reports all three over I2C or SPI.) Tj T*
+(It is designed for battery powered nodes that wake, sample and sleep again,) Tj T*
+(so its standby current is held under one microamp across the full range.) Tj T*
+(Electrical characteristics) Tj T*
+(Supply voltage ranges from 1.71 volts to 3.6 volts. Typical current while) Tj T*
+(sampling all three channels at one hertz is 3.4 microamps. The interface) Tj T*
+(accepts clock rates up to 3.4 megahertz in I2C high speed mode and up to) Tj T*
+(10 megahertz on SPI. Pins tolerate 3.6 volts even when the part is unpowered.) Tj T*
+(Measurement accuracy) Tj T*
+(Temperature accuracy is plus or minus 0.3 degrees Celsius between 0 and 65) Tj T*
+(degrees. Humidity accuracy is plus or minus 2 percent between 20 and 80) Tj T*
+(percent relative humidity. Pressure accuracy is plus or minus 0.12 hectopascal,) Tj T*
+(equivalent to about one metre of altitude, after the factory calibration.) Tj T*
+(Calibration) Tj T*
+(Each device is calibrated at the factory and stores its coefficients in) Tj T*
+(non-volatile memory. Host software reads the coefficients once at start-up) Tj T*
+(and applies the compensation formulas given in the application note.) Tj T*
+(Ordering information) Tj T*
+(Order code GTT-7-TR ships on tape and reel in quantities of five thousand.) Tj T*
+ET
+endstream
+endobj
+6 0 obj
+<< /Title (GTT-7 Environmental Sensor Datasheet) /CreationDate (D:20261002090000Z) >>
+endobj
+xref
+0 7
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000121 00000 n 
+0000000247 00000 n 
+0000000317 00000 n 
+0000001894 00000 n 
+trailer
+<< /Size 7 /Root 1 0 R /Info 6 0 R >>
+startxref
+1995
+%%EOF
