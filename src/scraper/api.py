@@ -1,7 +1,10 @@
 """Firecrawl-compatible HTTP API (ADR 0003): only the slice of scrape that Callers use.
 
 Responses keep Firecrawl's shape; our own fields (fetcher, verdict, confidence,
-publishedDate, attempts) are extras that Firecrawl clients ignore.
+publishedDate, attempts) are extras that Firecrawl-speaking Callers ignore.
+
+A failure (no Fetcher produced real content, including a real upstream 404) is an
+HTTP 502 with success: false, so a Caller never mistakes it for content.
 """
 
 from __future__ import annotations
@@ -17,7 +20,7 @@ from .router import Attempt, Failure, Router
 
 
 class ScrapeRequest(BaseModel):
-    # Firecrawl clients send more options than we honour; unknown ones are ignored.
+    # Callers send more Firecrawl options than we honour; unknown ones are ignored.
     model_config = ConfigDict(extra="ignore")
 
     url: str

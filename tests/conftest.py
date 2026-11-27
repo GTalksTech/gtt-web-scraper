@@ -22,6 +22,7 @@ def web() -> Iterator[FakeWeb]:
 @pytest.fixture
 def client() -> TestClient:
     config = load_config()
-    # Keep challenge polling instant in tests; the count is what matters.
+    # Fixed here so tests don't depend on tuning in config/scraper.yaml; polling is instant.
+    config.gate.challenge_poll_attempts = 3
     config.gate.challenge_poll_interval_s = 0.0
     return TestClient(create_app(config))

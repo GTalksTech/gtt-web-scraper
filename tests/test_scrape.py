@@ -48,7 +48,9 @@ def test_thin_real_page_is_returned_flagged_possibly_partial(
     assert body["data"]["confidence"] == "possibly_partial"
 
 
-def test_plain_download_presents_as_chrome(client: TestClient, web: FakeWeb) -> None:
+def test_plain_download_sends_chrome_headers(client: TestClient, web: FakeWeb) -> None:
+    # Only headers are visible over the fake web's plain HTTP; the TLS and HTTP/2
+    # fingerprint is curl_cffi's job and shows up in the Canary Set instead.
     url = web.serve("/article", page("article.html"))
 
     scrape(client, url)

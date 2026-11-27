@@ -9,7 +9,7 @@ from dataclasses import dataclass, replace
 from .config import Config
 from .fetchers import Fetcher, FetchError
 from .fetchers.plain import PlainFetcher
-from .gate import CHALLENGE, Verdict, judge
+from .gate import CHALLENGE, FETCH_ERROR, Verdict, judge
 from .page import FetchedPage
 
 
@@ -33,42 +33,43 @@ class Failure:
     attempts: list[Attempt]
 
 
-def build_ladder(config: Config) -> list[Fetcher]:
+def _build_ladder(config: Config) -> list[Fetcher]:
     available: dict[str, Fetcher] = {"plain": PlainFetcher(config.plain)}
     return [available[name] for name in config.ladder]
 
 
 class Router:
-    def __init__(self, config: Config, ladder: list[Fetcher] | None = None) -> None:
+    def __init__(self, config: Config) -> None:
         self._config = config
-        self._ladder = ladder if ladder is not None else build_ladder(config)
+        self._ladder = _build_ladder(config)
 
     def get(self, url: str) -> Success | Failure:
         attempts: list[Attempt] = []
         for fetcher in self._ladder:
-            try:
-                page, verdict = self._fetch_and_judge(fetcher, url)
-            except FetchError as exc:
-                failed = Verdict("rejected", "fetch_error", str(exc))
-                attempts.append(Attempt(fetcher.name, failed, None))
-                continue
-            attempts.append(Attempt(fetcher.name, verdict, page.status))
-            if verdict.decision != "rejected":
-                return Success(page, fetcher.name, verdict, attempts)
+            attempt, page = self._try(fetcher, url)
+            attempts.append(attempt)
+            if page is not None and attempt.verdict.decision != "rejected":
+                return Success(page, fetcher.name, attempt.verdict, attempts)
         return Failure(attempts)
 
-    def _fetch_and_judge(self, fetcher: Fetcher, url: str) -> tuple[FetchedPage, Verdict]:
+    def _try(self, fetcher: Fetcher, url: str) -> tuple[Attempt, FetchedPage | None]:
         """One Fetcher's result, re-fetched briefly while a non-interactive challenge
         might clear. Interactive challenges are returned at once."""
         gate = self._config.gate
-        page = fetcher.fetch(url)
+        try:
+            page = fetcher.fetch(url)
+        except FetchError as exc:
+            return Attempt(fetcher.name, Verdict("rejected", FETCH_ERROR, str(exc)), None), None
         verdict = judge(page, gate)
         polls = 0
         while verdict.reason == CHALLENGE and polls < gate.challenge_poll_attempts:
             polls += 1
             time.sleep(gate.challenge_poll_interval_s)
-            page = fetcher.fetch(url)
+            try:
+                page = fetcher.fetch(url)
+            except FetchError:
+                continue  # keep the challenge Verdict as the cause
             verdict = judge(page, gate)
         if verdict.reason == CHALLENGE:
             verdict = replace(verdict, detail=f"{verdict.detail}; still challenged after {polls} polls")
-        return page, verdict
+        return Attempt(fetcher.name, verdict, page.status), page

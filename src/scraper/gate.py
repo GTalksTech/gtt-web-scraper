@@ -16,61 +16,59 @@ from .page import FetchedPage
 
 Decision = Literal["accepted", "suspect", "rejected"]
 
-# Reasons for a rejected Verdict. A "challenge" is non-interactive and worth polling;
-# an "interactive_challenge" (Turnstile, CAPTCHA) is never attempted locally.
+# Reasons a Verdict gives. A CHALLENGE is non-interactive and worth polling; an
+# INTERACTIVE_CHALLENGE (Turnstile, CAPTCHA) is never attempted locally. A non-2xx
+# status gives "http_<code>".
+OK = "ok"
+THIN = "thin"
 CHALLENGE = "challenge"
 INTERACTIVE_CHALLENGE = "interactive_challenge"
+COOKIE_WALL = "cookie_wall"
+SOFT_404 = "soft_404"
+BLOCKED = "blocked"
+EMPTY_SHELL = "empty_shell"
+TOO_SHORT = "too_short"
+FETCH_ERROR = "fetch_error"
 
 
 @dataclass(frozen=True)
 class Verdict:
     decision: Decision
-    reason: str  # short machine-readable cause, e.g. "challenge", "too_short"
+    reason: str  # one of the reasons above, or "http_<code>"
     detail: str = ""
 
 
-# Markers that only ever appear on challenge or block pages.
-_STRONG_CHALLENGE_MARKERS = (
-    "_cf_chl_opt",  # Cloudflare challenge bootstrap
-    "/cdn-cgi/challenge-platform/h/",  # Cloudflare challenge orchestrator
-    "captcha-delivery.com",  # DataDome block/captcha iframe
-    "px-captcha",  # PerimeterX block
+@dataclass(frozen=True)
+class _Marker:
+    text: str  # matched against the lower-cased HTML
+    strong: bool  # only ever on challenge pages; weak ones also turn up on real pages
+    interactive: bool  # a human has to act, so polling is pointless
+
+
+_CHALLENGE_MARKERS = (
+    _Marker("_cf_chl_opt", strong=True, interactive=False),  # Cloudflare challenge bootstrap
+    _Marker("/cdn-cgi/challenge-platform/h/", strong=True, interactive=False),  # its orchestrator
+    _Marker("ctype:'interactive'", strong=True, interactive=True),
+    _Marker("captcha-delivery.com", strong=True, interactive=True),  # DataDome captcha
+    _Marker("px-captcha", strong=True, interactive=True),  # PerimeterX "Press & Hold"
+    # Weak: also seen on real pages (a login form with reCAPTCHA), so they count only
+    # when the page has little text. The bare "/cdn-cgi/challenge-platform/" path is
+    # not a marker at all: Cloudflare injects its bot-management script from there
+    # into ordinary pages (corpus: medium_404).
+    _Marker("challenges.cloudflare.com/turnstile", strong=False, interactive=True),
+    _Marker("cf-turnstile", strong=False, interactive=True),
+    _Marker("g-recaptcha", strong=False, interactive=True),
+    _Marker("recaptcha/api.js", strong=False, interactive=True),
+    _Marker("h-captcha", strong=False, interactive=True),
+    _Marker("hcaptcha.com", strong=False, interactive=True),
+    _Marker("press &amp; hold", strong=False, interactive=True),
+    _Marker("press & hold", strong=False, interactive=True),
+    _Marker("_pxappid", strong=False, interactive=False),
+    _Marker("checking your browser", strong=False, interactive=False),
+    _Marker("checking if the site connection is secure", strong=False, interactive=False),
+    _Marker("verify you are human", strong=False, interactive=False),
 )
 _CHALLENGE_TITLES = ("just a moment", "attention required! | cloudflare")
-
-# Markers that also turn up on real pages (a login form with reCAPTCHA, Cloudflare's
-# bot-management script), so they count only when the page has little text.
-_WEAK_CHALLENGE_MARKERS = (
-    # Not the bare "/cdn-cgi/challenge-platform/" path: Cloudflare injects its
-    # bot-management script from there into ordinary pages (corpus: indeed_home).
-    "challenges.cloudflare.com/turnstile",
-    "cf-turnstile",
-    "g-recaptcha",
-    "recaptcha/api.js",
-    "h-captcha",
-    "hcaptcha.com",
-    "_pxappid",
-    "press &amp; hold",
-    "press & hold",
-    "checking your browser",
-    "checking if the site connection is secure",
-    "verify you are human",
-)
-
-# Any of these on a challenge page means a human has to act: never poll it.
-_INTERACTIVE_MARKERS = (
-    "challenges.cloudflare.com/turnstile",
-    "cf-turnstile",
-    "ctype:'interactive'",
-    "g-recaptcha",
-    "recaptcha/api.js",
-    "h-captcha",
-    "hcaptcha.com",
-    "captcha-delivery.com",
-    "px-captcha",
-    "press &amp; hold",
-    "press & hold",
-)
 
 
 def _challenge(page: FetchedPage, html: str, thin: bool) -> Verdict | None:
@@ -81,12 +79,11 @@ def _challenge(page: FetchedPage, html: str, thin: bool) -> Verdict | None:
         found.append("DataDome block")
     title = (page.title or "").strip().lower()
     found += [f"title '{page.title}'" for t in _CHALLENGE_TITLES if title.startswith(t)]
-    found += [m for m in _STRONG_CHALLENGE_MARKERS if m in html]
-    if thin:
-        found += [m for m in _WEAK_CHALLENGE_MARKERS if m in html]
+    present = [m for m in _CHALLENGE_MARKERS if m.text in html]
+    found += [m.text for m in present if m.strong or thin]
     if not found:
         return None
-    interactive = [m for m in _INTERACTIVE_MARKERS if m in html]
+    interactive = [m.text for m in present if m.interactive]
     if interactive:
         return Verdict("rejected", INTERACTIVE_CHALLENGE, ", ".join(interactive))
     return Verdict("rejected", CHALLENGE, ", ".join(found))
@@ -109,26 +106,13 @@ _CONSENT_PHRASES = (
 )
 
 
-# Signs that a page with almost no text is a JavaScript app waiting to render.
-_SHELL_MARKERS = (
-    'id="root"',
-    'id="app"',
-    'id="__next"',
-    'id="__nuxt"',
-    'id="svelte"',
-    "ng-version",
-    "enable javascript",
-    "requires javascript",
-)
-
-
 def _cookie_wall(page: FetchedPage, thin: bool) -> Verdict | None:
     if not thin:
         return None
     text = f"{page.title or ''}\n{page.markdown}".lower()
     found = [p for p in _CONSENT_PHRASES if p in text]
     if len(found) >= 3:
-        return Verdict("rejected", "cookie_wall", ", ".join(found))
+        return Verdict("rejected", COOKIE_WALL, ", ".join(found))
     return None
 
 
@@ -165,14 +149,27 @@ def _title_or_soft_404(page: FetchedPage, thin: bool) -> Verdict | None:
         return None
     title = (page.title or "").strip()
     if _BLOCKED_TITLES.search(title):
-        return Verdict("rejected", "blocked", f"title '{title}'")
+        return Verdict("rejected", BLOCKED, f"title '{title}'")
     if _SOFT_404_TITLES.search(title):
-        return Verdict("rejected", "soft_404", f"title '{title}'")
+        return Verdict("rejected", SOFT_404, f"title '{title}'")
     text = page.markdown.lower()
     found = [p for p in _SOFT_404_PHRASES if p in text]
     if found:
-        return Verdict("rejected", "soft_404", ", ".join(found))
+        return Verdict("rejected", SOFT_404, ", ".join(found))
     return None
+
+
+# Signs that a page with almost no text is a JavaScript app waiting to render.
+_SHELL_MARKERS = (
+    'id="root"',
+    'id="app"',
+    'id="__next"',
+    'id="__nuxt"',
+    'id="svelte"',
+    "ng-version",
+    "enable javascript",
+    "requires javascript",
+)
 
 
 def judge(page: FetchedPage, config: GateConfig) -> Verdict:
@@ -191,8 +188,8 @@ def judge(page: FetchedPage, config: GateConfig) -> Verdict:
     if length < config.min_chars:
         shell = [m for m in _SHELL_MARKERS if m in html]
         if shell and "<script" in html:
-            return Verdict("rejected", "empty_shell", f"{length} chars of text; {', '.join(shell)}")
-        return Verdict("rejected", "too_short", f"{length} chars of text")
+            return Verdict("rejected", EMPTY_SHELL, f"{length} chars of text; {', '.join(shell)}")
+        return Verdict("rejected", TOO_SHORT, f"{length} chars of text")
     if thin:
-        return Verdict("suspect", "thin", f"{length} chars of text")
-    return Verdict("accepted", "ok")
+        return Verdict("suspect", THIN, f"{length} chars of text")
+    return Verdict("accepted", OK)
