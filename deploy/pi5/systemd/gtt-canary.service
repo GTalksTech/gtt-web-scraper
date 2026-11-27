@@ -1,0 +1,12 @@
+# Runs the Canary Set and checks success rates against the live service.
+# Started daily by gtt-canary.timer, or on demand. Installed by install.sh.
+[Unit]
+Description=gtt-web-scraper: Canary Set and health check
+Requires=docker.service
+After=docker.service gtt-web-scraper.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=@DIR@
+ExecStart=/usr/bin/flock /run/lock/gtt-web-scraper.lock @DIR@/gtt-canary.sh
+TimeoutStartSec=45min

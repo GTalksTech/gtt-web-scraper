@@ -9,4 +9,4 @@ After=docker.service tailscaled.service gtt-web-scraper.service
 Type=oneshot
 WorkingDirectory=@DIR@
 ExecStart=/usr/bin/flock /run/lock/gtt-web-scraper.lock @DIR@/gtt-up.sh
-TimeoutStartSec=15min
+TimeoutStartSec=45min

@@ -103,6 +103,19 @@ class SearchConfig:
     tavily_api_key: str | None = None
 
 
+@dataclass
+class HealthConfig:
+    # Rolling success rates per Fetcher are counted over this window.
+    window_s: float = 86400.0
+    # A Fetcher with fewer attempts than this in the window isn't judged.
+    min_attempts: int = 10
+    # A Fetcher whose share of successful attempts falls below this raises an Incident.
+    min_success_rate: float = 0.5
+    # When at least this share of the Canary Set fails, it is one widespread Incident
+    # rather than one per Site.
+    widespread_fraction: float = 0.5
+
+
 # A domain name: dot-separated labels of letters, digits and hyphens.
 _DOMAIN = re.compile(r"^(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))+$")
 
@@ -135,6 +148,16 @@ class SourceList:
             raise ValueError(f"Source List has domains both trusted and blocked: {', '.join(both)}")
 
 
+# The Canary Set's file, always beside the config file, for the same reason as the
+# Source List's: a policy check diffs it to catch a removed or loosened entry (ADR 0002).
+CANARY_SET_FILE = "canary.yaml"
+
+
+def config_path() -> Path:
+    """The config file in use: $SCRAPER_CONFIG, or config/scraper.yaml."""
+    return Path(os.environ.get("SCRAPER_CONFIG") or DEFAULT_PATH)
+
+
 # The Source List's file, always beside the config file. It is deliberately not a
 # setting: a policy check diffs this one file to catch a removed domain (ADR 0002), and
 # a setting could point search at a different, shorter list.
@@ -158,10 +181,11 @@ class Config:
     adapters: AdaptersConfig = field(default_factory=AdaptersConfig)
     search: SearchConfig = field(default_factory=SearchConfig)
     source_list: SourceList = field(default_factory=SourceList)
+    health: HealthConfig = field(default_factory=HealthConfig)
 
 
 def load_config(path: str | Path | None = None) -> Config:
-    path = Path(path or os.environ.get("SCRAPER_CONFIG") or DEFAULT_PATH)
+    path = Path(path or config_path())
     raw: dict[str, Any] = yaml.safe_load(path.read_text()) or {}
     search = SearchConfig(
         **raw.get("search", {}),
@@ -183,4 +207,5 @@ def load_config(path: str | Path | None = None) -> Config:
         ),
         search=search,
         source_list=load_source_list(path.parent / SOURCE_LIST_FILE),
+        health=HealthConfig(**raw.get("health", {})),
     )

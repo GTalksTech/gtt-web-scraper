@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Tests for the pi5 deployment (ticket #8). Never touches pi5, the tailnet or
+# Tests for the pi5 deployment (tickets #8, #9). Never touches pi5, the tailnet or
 # GitHub: docker, tailscale and systemctl are faked, except that the real
 # `docker compose config` checks the compose file (it needs no daemon).
 #
@@ -67,18 +67,51 @@ check "image makes /app/data writable by the service user" \
 check "refuses to start without TAILNET_IP (never binds 0.0.0.0)" \
   fails env -u TAILNET_IP docker compose -f "$PI/compose.yml" config -q 2> /dev/null
 
+echo "compose file: the candidate (a new image on trial)"
+check "not started by a plain deploy" test "$(q '.services.candidate // "absent"')" = "absent"
+C="$(cd "$PI" && TAILNET_IP=100.64.0.5 docker compose -f compose.yml --profile candidate config --format json)"
+check "runs the locally tagged candidate, never pulled" \
+  test "$(q '"\(.services.candidate.image) \(.services.candidate.pull_policy)"')" = "gtt-web-scraper:candidate never"
+check "publishes no port: it never takes traffic" test "$(q '.services.candidate.ports // [] | length')" = 0
+check "has no volume: never touches the live cache" test "$(q '.services.candidate.volumes // [] | length')" = 0
+check "on the live service's network, so it can reach http://scraper:3002" \
+  test "$(q '.services.candidate.networks | keys | join(",")')" = "default"
+check "memory capped at 1 GiB, so live + candidate leave tailscaled room" \
+  test "$(q .services.candidate.mem_limit)" -le $((1024 * 1024 * 1024))
+check "  no swap beyond it" test "$(q .services.candidate.memswap_limit)" = "$(q .services.candidate.mem_limit)"
+check "CPU capped at 1 core" test "$(q .services.candidate.cpus)" = "1"
+check "OOM killer picks the candidate first" \
+  test "$(q .services.candidate.oom_score_adj)" -gt "$(q .services.scraper.oom_score_adj)"
+check "gets the wizard's env file too" test "$(q .services.candidate.environment.FIRECRAWL_API_KEY)" = "fc-test"
+
 # ── fakes for gtt-up.sh and install.sh ─────────────────────────────────────
 FAKE="$T/fake"; BIN="$T/bin"; mkdir -p "$FAKE" "$BIN"
 fake() { printf '#!/usr/bin/env bash\nFAKE=%q\n%s\n' "$FAKE" "$2" > "$BIN/$1"; chmod +x "$BIN/$1"; }
 
 # tailscale: prints the IP in $FAKE/ip (none if the file is missing).
 fake tailscale '[[ "$*" == "ip -4" ]] && cat "$FAKE/ip" 2>/dev/null; true'
-# docker: logs each call with the TAILNET_IP it saw. The running image is in
-# $FAKE/running; a pull moves it to $FAKE/remote unless $FAKE/pull_fails exists.
+# docker: logs each call with the TAILNET_IP it saw. The live container runs the
+# image in $FAKE/running; the local :main tag points at $FAKE/tagged, which a
+# pull sets to $FAKE/remote unless $FAKE/pull_fails exists. The candidate's
+# Canary run exits with $FAKE/canary_rc (default 0, promote; 3 is kept out).
 fake docker 'printf "%s|TAILNET_IP=%s\n" "$*" "${TAILNET_IP:-}" >> "$FAKE/docker.log"
+MAIN=ghcr.io/gtalkstech/gtt-web-scraper:main
 case "$*" in
-  "compose pull"*) [[ -e "$FAKE/pull_fails" ]] && exit 1; cp "$FAKE/remote" "$FAKE/pulled" ;;
-  "compose up"*)   [[ -e "$FAKE/up_fails" ]] && exit 1; [[ -e "$FAKE/pulled" ]] && mv "$FAKE/pulled" "$FAKE/running"; true ;;
+  "compose config --images scraper") echo "$MAIN" ;;
+  "compose pull"*) [[ -e "$FAKE/pull_fails" ]] && exit 1; cp "$FAKE/remote" "$FAKE/tagged" ;;
+  "compose --profile candidate up"*) [[ -e "$FAKE/candidate_fails" ]] && exit 1; true ;;
+  "compose --profile candidate"*) true ;;
+  "compose up"*)   [[ -e "$FAKE/up_fails" ]] && exit 1; [[ -e "$FAKE/tagged" ]] && cp "$FAKE/tagged" "$FAKE/running"; true ;;
+  "image inspect --format {{.Id}} $MAIN") cat "$FAKE/tagged" 2>/dev/null || exit 1 ;;
+  "tag "*" $MAIN") echo "$2" > "$FAKE/tagged" ;;
+  "exec gtt-web-scraper-candidate python -m scraper.health deploy"*)
+    rc=$(cat "$FAKE/canary_rc" 2>/dev/null || echo 0)
+    [[ $rc == 3 ]] && echo "{\"fingerprint\": \"deploy_rejected\", \"kind\": \"deploy_rejected\"}"
+    exit "$rc" ;;
+  "exec gtt-web-scraper python -m scraper.health canary")
+    [[ -e "$FAKE/live_down" ]] && exit 1
+    [[ -e "$FAKE/canary_incident" ]] && echo "{\"fingerprint\": \"canary_failed:lwn.net\", \"kind\": \"canary_failed\"}"
+    true ;;
   "inspect --format {{.Image}}"*) cat "$FAKE/running" 2>/dev/null || exit 1 ;;
   "inspect --format"*Health*) cat "$FAKE/health" 2>/dev/null; true ;;
   "compose version"*) echo "Docker Compose version v2.30.0" ;;
@@ -91,10 +124,19 @@ fake systemctl 'printf "%s\n" "$*" >> "$FAKE/systemctl.log"
 [[ "$*" == "is-active"* ]] && exit 3
 [[ "$*" == "enable --now"* && -e "$FAKE/start_fails" ]] && exit 1; true'
 
-reset_fakes() { rm -f "$FAKE"/*; echo 100.64.0.5 > "$FAKE/ip"; echo sha256:old > "$FAKE/running"; echo sha256:new > "$FAKE/remote"; }
+reset_fakes() {
+  rm -f "$FAKE"/* "$PI/incidents.jsonl" "$PI/.rejected-images" "$PI/.live-image"
+  echo 100.64.0.5 > "$FAKE/ip"; echo sha256:old > "$FAKE/running"; echo sha256:old > "$FAKE/tagged"
+  echo sha256:new > "$FAKE/remote"
+}
 up() { PATH="$BIN:$PATH" TAILNET_WAIT_S="${WAIT:-0}" bash "$PI/gtt-up.sh" > "$FAKE/out.log" 2>&1; }
+canary() { PATH="$BIN:$PATH" bash "$PI/gtt-canary.sh" > "$FAKE/out.log" 2>&1; }
+incidents() { if [[ -f "$PI/incidents.jsonl" ]]; then wc -l < "$PI/incidents.jsonl" | tr -d ' '; else echo 0; fi; }
+valid_jsonl() { jq -e . "$PI/incidents.jsonl" > /dev/null; }
 ran() { grep -q "^$1" "$FAKE/docker.log"; }
 ran_before() { local a b; a=$(grep -n "^$1" "$FAKE/docker.log" | head -1 | cut -d: -f1); b=$(grep -n "^$2" "$FAKE/docker.log" | head -1 | cut -d: -f1); [[ -n $a && -n $b && $a -lt $b ]]; }
+# $2 ran at some point after the first time $1 ran.
+ran_after() { local a b; a=$(grep -n "^$1" "$FAKE/docker.log" | head -1 | cut -d: -f1); b=$(grep -n "^$2" "$FAKE/docker.log" | tail -1 | cut -d: -f1); [[ -n $a && -n $b && $a -lt $b ]]; }
 
 # ── gtt-up.sh: one deploy pass ─────────────────────────────────────────────
 echo "gtt-up.sh"
@@ -131,6 +173,91 @@ reset_fakes; echo healthy > "$FAKE/health"
 up
 check "healthy container is left alone" fails grep -q "^compose restart" "$FAKE/docker.log"
 
+# ── gtt-up.sh: a new image must pass the Canary Set first ──────────────────
+echo "gtt-up.sh: deploys gated by the Canary Set"
+reset_fakes
+up
+check "a new image runs as the candidate before it takes traffic" \
+  ran_before "compose --profile candidate up -d --no-deps candidate" "compose up -d"
+check "  the candidate is the newly pulled image" ran "tag sha256:new gtt-web-scraper:candidate"
+check "  the Canary Set runs in it against the live service and itself" \
+  ran "exec gtt-web-scraper-candidate python -m scraper.health deploy --live http://scraper:3002 --candidate http://127.0.0.1:3002 --candidate-image sha256:new|"
+check "  and the candidate is removed afterwards" \
+  ran_after "exec gtt-web-scraper-candidate" "compose --profile candidate rm -sf candidate"
+check "scores at least as well: promoted" test "$(cat "$FAKE/running")" = "sha256:new"
+check "  with no Incident" test "$(incidents)" = 0
+
+reset_fakes; echo 3 > "$FAKE/canary_rc"
+check "scores worse: the service stays up" up
+check "  the old image keeps serving" test "$(cat "$FAKE/running")" = "sha256:old"
+check "  the local tag points back at the old image" test "$(cat "$FAKE/tagged")" = "sha256:old"
+check "  the runner's Incident is in the outbox" grep -q '"fingerprint": "deploy_rejected"' "$PI/incidents.jsonl"
+check "  says so in the journal" grep -q "kept out sha256:new" "$FAKE/out.log"
+check "  the kept-out image stays tagged (no re-download every 10 minutes)" ran "tag sha256:new gtt-web-scraper:kept-out"
+: > "$FAKE/docker.log"
+up
+check "the same kept-out image isn't run against the Canary Set again" fails ran "exec gtt-web-scraper-candidate"
+check "  nor reported again" test "$(incidents)" = 1
+check "  and the old image still serves" test "$(cat "$FAKE/running")" = "sha256:old"
+echo sha256:newer > "$FAKE/remote"; rm "$FAKE/canary_rc"
+up
+check "a later image is checked again, and promoted when it passes" test "$(cat "$FAKE/running")" = "sha256:newer"
+
+reset_fakes; touch "$FAKE/candidate_fails"
+up
+check "candidate won't start: kept out" test "$(cat "$FAKE/running")" = "sha256:old"
+check "  with a valid Incident saying so" valid_jsonl
+check "  naming the image" grep -q '"candidateImage": "sha256:new".*"fingerprint": "deploy_rejected"' "$PI/incidents.jsonl"
+check "  and why" grep -q "wouldn't start" "$PI/incidents.jsonl"
+
+reset_fakes; echo 1 > "$FAKE/canary_rc"
+up
+check "Canary run crashes in the candidate: kept out" test "$(cat "$FAKE/running")" = "sha256:old"
+check "  with a valid Incident saying so" valid_jsonl
+check "  and why" grep -q "couldn't run in it (exit 1)" "$PI/incidents.jsonl"
+
+reset_fakes; rm "$FAKE/running" "$FAKE/tagged"
+up
+check "first install (nothing live to compare with): the image just starts" test "$(cat "$FAKE/running")" = "sha256:new"
+check "  without a candidate" fails ran "compose --profile candidate up"
+check "  and is remembered as the live image" test "$(cat "$PI/.live-image")" = "sha256:new"
+
+# A reboot (or systemctl stop) runs compose down: no container, but a live image.
+reset_fakes; up; rm "$FAKE/running"; echo sha256:newer > "$FAKE/remote"; echo 3 > "$FAKE/canary_rc"
+: > "$FAKE/docker.log"
+up
+check "after a reboot, the last live image comes back first" \
+  ran_before "tag sha256:new ghcr.io/gtalkstech/gtt-web-scraper:main" "compose pull"
+check "  and a new image is still checked against the Canary Set" ran "exec gtt-web-scraper-candidate"
+check "  and kept out when it does worse" test "$(cat "$FAKE/running")" = "sha256:new"
+rm "$FAKE/running"; : > "$FAKE/docker.log"
+up
+check "after another reboot, a kept-out image stays out" test "$(cat "$FAKE/running")" = "sha256:new"
+check "  without running the Canary Set again" fails ran "exec gtt-web-scraper-candidate"
+
+reset_fakes; echo 3 > "$FAKE/canary_rc"
+PATH="$BIN:$PATH" TAILNET_WAIT_S=0 GTT_DEPLOY_UNGATED=1 bash "$PI/gtt-up.sh" > "$FAKE/out.log" 2>&1
+check "GTT_DEPLOY_UNGATED=1 deploys without the Canary Set" test "$(cat "$FAKE/running")" = "sha256:new"
+check "  without a candidate" fails ran "compose --profile candidate up"
+
+# ── gtt-canary.sh: the daily health run ────────────────────────────────────
+echo "gtt-canary.sh"
+reset_fakes
+check "a healthy run succeeds" canary
+check "  runs the health runner in the live container" ran "exec gtt-web-scraper python -m scraper.health canary|"
+check "  and writes no Incident" test "$(incidents)" = 0
+reset_fakes; touch "$FAKE/canary_incident"
+canary
+check "the runner's Incidents go to the outbox" grep -q '"fingerprint": "canary_failed:lwn.net"' "$PI/incidents.jsonl"
+canary
+check "  appended, never overwritten" test "$(incidents)" = 2
+reset_fakes; touch "$FAKE/live_down"
+check "live container not answering: fails" fails canary
+check "  with a valid Incident" valid_jsonl
+check "  that the service isn't answering" \
+  test "$(jq -r '"\(.fingerprint) \(.effect)"' "$PI/incidents.jsonl")" \
+       = "canary_widespread the service isn't answering (the Canary Set couldn't run)"
+
 # ── install.sh ─────────────────────────────────────────────────────────────
 echo "install.sh"
 install_pi() {
@@ -152,12 +279,20 @@ check "boot unit can stop the service without TAILNET_IP set" \
 check "update unit runs gtt-up.sh under the same lock" \
   test "$(grep ^ExecStart= "$U/gtt-web-scraper.service")" = "$(grep ^ExecStart= "$U/gtt-web-scraper-update.service")"
 check "timer pulls on a schedule" grep -q "^OnUnitActiveSec=" "$U/gtt-web-scraper-update.timer"
+check "Canary unit runs gtt-canary.sh under the deploy lock (never mid-deploy)" \
+  grep -q "^ExecStart=.*flock /run/lock/gtt-web-scraper.lock $PI/gtt-canary.sh$" "$U/gtt-canary.service"
+check "Canary timer runs daily, catching up after downtime" \
+  grep -q "^OnCalendar=\*-\*-\* " "$U/gtt-canary.timer"
+check "  persistent" grep -qx "Persistent=true" "$U/gtt-canary.timer"
+check "deploy units allow time for two Canary runs" \
+  grep -qx "TimeoutStartSec=45min" "$U/gtt-web-scraper-update.service"
+check "gtt-canary.sh made executable" test -x "$PI/gtt-canary.sh"
 check "no template placeholders left" fails grep -rq "@DIR@" "$U"
 check "hardware watchdog configured" \
   grep -qx "RuntimeWatchdogSec=15s" "$T/etc/systemd/system.conf.d/gtt-watchdog.conf"
 check "systemd re-executed so the watchdog takes effect" grep -qx "daemon-reexec" "$FAKE/systemctl.log"
-check "boot unit and timer enabled and started" \
-  grep -qx "enable --now gtt-web-scraper.service gtt-web-scraper-update.timer" "$FAKE/systemctl.log"
+check "boot unit and timers enabled and started" \
+  grep -qx "enable --now gtt-web-scraper.service gtt-web-scraper-update.timer gtt-canary.timer" "$FAKE/systemctl.log"
 
 ready_pi; rm "$PI/.env"
 check "refuses without the wizard's env file" fails install_pi
