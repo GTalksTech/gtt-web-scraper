@@ -18,7 +18,12 @@ COPY src ./src
 COPY config ./config
 RUN uv sync --frozen --no-dev
 
-RUN useradd --system --uid 10001 scraper
+# /app/data holds the page cache (config/scraper.yaml, cache.path). It must be writable
+# by the service user; compose mounts a named volume here, which Docker seeds with this
+# directory's ownership on first use, so the cache survives restarts and image updates.
+RUN useradd --system --uid 10001 scraper \
+    && mkdir -p /app/data \
+    && chown scraper:scraper /app/data
 USER scraper
 
 EXPOSE 3002

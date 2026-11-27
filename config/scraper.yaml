@@ -31,3 +31,12 @@ gate:
   # Non-interactive challenges are re-fetched this many times, this far apart, before giving up.
   challenge_poll_attempts: 3
   challenge_poll_interval_s: 3.0
+
+cache:
+  # SQLite file holding the page cache (relative to the repo root). In a container this
+  # directory needs a volume, or the cache is lost on every restart.
+  path: data/scraper.db
+  # A cached page younger than this is served without touching the site, unless the
+  # Caller passes a smaller maxAge (0 forces a live fetch). Only accepted and suspect
+  # results are cached; failures never are.
+  default_max_age_s: 86400

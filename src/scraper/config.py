@@ -9,7 +9,8 @@ from typing import Any
 
 import yaml
 
-DEFAULT_PATH = Path(__file__).resolve().parents[2] / "config" / "scraper.yaml"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_PATH = REPO_ROOT / "config" / "scraper.yaml"
 
 
 @dataclass
@@ -38,11 +39,24 @@ class GateConfig:
 
 
 @dataclass
+class CacheConfig:
+    # SQLite file holding the page cache; a relative path is from the repo root.
+    path: str = "data/scraper.db"
+    # How old a cached page may be when the Caller doesn't pass a maximum age.
+    default_max_age_s: float = 86400.0
+
+    def resolved_path(self) -> Path:
+        path = Path(self.path)
+        return path if path.is_absolute() else REPO_ROOT / path
+
+
+@dataclass
 class Config:
     ladder: list[str] = field(default_factory=lambda: ["plain", "paid"])
     plain: PlainConfig = field(default_factory=PlainConfig)
     paid: PaidConfig = field(default_factory=PaidConfig)
     gate: GateConfig = field(default_factory=GateConfig)
+    cache: CacheConfig = field(default_factory=CacheConfig)
 
 
 def load_config(path: str | Path | None = None) -> Config:
@@ -55,4 +69,5 @@ def load_config(path: str | Path | None = None) -> Config:
             **raw.get("paid", {}), api_key=os.environ.get("FIRECRAWL_API_KEY") or None
         ),
         gate=GateConfig(**raw.get("gate", {})),
+        cache=CacheConfig(**raw.get("cache", {})),
     )

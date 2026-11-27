@@ -25,6 +25,10 @@ services:
     env_file:
       - path: .env
         required: true
+    # The page cache (SQLite) lives in a named volume, so it survives restarts and
+    # image updates; replacing the container never empties it.
+    volumes:
+      - cache:/app/data
     restart: unless-stopped
     # 2 of 4 cores and 2 of 16 GB, no swap beyond that, bounded process count.
     cpus: 2.0
@@ -44,3 +48,6 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+volumes:
+  cache:
