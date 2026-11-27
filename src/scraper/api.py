@@ -9,11 +9,14 @@ HTTP 502 with success: false, so a Caller never mistakes it for content.
 
 from __future__ import annotations
 
+import time
+from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from .config import Config, load_config
 from .router import Attempt, Failure, Router
@@ -26,7 +29,9 @@ class ScrapeRequest(BaseModel):
     url: str
     # Only markdown is produced; other requested formats are ignored, not errors.
     formats: list[Any] = ["markdown"]
-    maxAge: int | None = None  # noqa: N815 (Firecrawl's field name); accepted, cache comes later
+    # Firecrawl's maximum cache age, in milliseconds; 0 forces a live fetch. Omitted
+    # means the configured default (24 hours).
+    maxAge: int | None = Field(default=None, ge=0)  # noqa: N815 (Firecrawl's field name)
 
 
 def _attempt_json(attempt: Attempt) -> dict[str, Any]:
@@ -39,9 +44,11 @@ def _attempt_json(attempt: Attempt) -> dict[str, Any]:
     }
 
 
-def create_app(config: Config | None = None) -> FastAPI:
+def create_app(
+    config: Config | None = None, clock: Callable[[], float] = time.time
+) -> FastAPI:
     config = config or load_config()
-    router = Router(config)
+    router = Router(config, clock)
     app = FastAPI(title="gtt-web-scraper")
 
     @app.get("/health")
@@ -51,7 +58,8 @@ def create_app(config: Config | None = None) -> FastAPI:
     @app.post("/v1/scrape")
     @app.post("/v2/scrape")
     def scrape(request: ScrapeRequest) -> JSONResponse:
-        outcome = router.get(request.url)
+        max_age_s = None if request.maxAge is None else request.maxAge / 1000
+        outcome = router.get(request.url, max_age_s)
         if isinstance(outcome, Failure):
             tried = "; ".join(
                 f"{a.fetcher}: {a.verdict.decision} ({a.verdict.reason})" for a in outcome.attempts
@@ -73,6 +81,11 @@ def create_app(config: Config | None = None) -> FastAPI:
             )
         page = outcome.page
         accepted = outcome.verdict.decision == "accepted"
+        # Firecrawl's cache fields: cacheState is "hit" or "miss"; cachedAt only on a hit.
+        cache: dict[str, str] = {"cacheState": "miss"}
+        if outcome.cached_at is not None:
+            cached_at = datetime.fromtimestamp(outcome.cached_at, UTC)
+            cache = {"cacheState": "hit", "cachedAt": cached_at.isoformat().replace("+00:00", "Z")}
         return JSONResponse(
             {
                 "success": True,
@@ -83,6 +96,7 @@ def create_app(config: Config | None = None) -> FastAPI:
                         "sourceURL": page.requested_url,
                         "url": page.final_url,
                         "statusCode": page.status,
+                        **cache,
                     },
                     "fetcher": outcome.fetcher,
                     "verdict": outcome.verdict.decision,

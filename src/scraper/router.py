@@ -4,8 +4,10 @@ return either content or an explicit failure listing every Fetcher tried."""
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 
+from .cache import PageCache
 from .config import Config
 from .fetchers import Fetcher, FetchError, FetcherUnavailable
 from .fetchers.paid import PaidFetcher
@@ -29,7 +31,10 @@ class Success:
     page: FetchedPage
     fetcher: str
     verdict: Verdict
+    # Fetchers tried for this request; empty when it was served from the cache.
     attempts: list[Attempt]
+    # When the page was fetched, if it was served from the cache; None for a live fetch.
+    cached_at: float | None = None
 
 
 @dataclass(frozen=True)
@@ -51,16 +56,25 @@ def _build_ladder(config: Config) -> list[Fetcher]:
 
 
 class Router:
-    def __init__(self, config: Config) -> None:
+    def __init__(self, config: Config, clock: Callable[[], float] = time.time) -> None:
         self._config = config
         self._ladder = _build_ladder(config)
+        self._cache = PageCache(config.cache.resolved_path(), clock)
 
-    def get(self, url: str) -> Success | Failure:
+    def get(self, url: str, max_age_s: float | None = None) -> Success | Failure:
+        """Content for `url`: from the cache if a copy is no older than `max_age_s`
+        (default from config; 0 forces a live fetch), else from the Ladder."""
+        if max_age_s is None:
+            max_age_s = self._config.cache.default_max_age_s
+        cached = self._cache.get(url, max_age_s)
+        if cached is not None:
+            return Success(cached.page, cached.fetcher, cached.verdict, [], cached.fetched_at)
         attempts: list[Attempt] = []
         for fetcher in self._ladder:
             attempt, page = self._try(fetcher, url)
             attempts.append(attempt)
             if page is not None and attempt.verdict.decision != "rejected":
+                self._cache.put(url, page, fetcher.name, attempt.verdict)
                 return Success(page, fetcher.name, attempt.verdict, attempts)
         return Failure(attempts)
 

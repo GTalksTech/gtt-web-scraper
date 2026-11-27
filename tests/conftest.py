@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -29,8 +30,10 @@ def firecrawl() -> Iterator[FakeFirecrawl]:
 
 
 @pytest.fixture
-def config(firecrawl: FakeFirecrawl) -> Config:
+def config(firecrawl: FakeFirecrawl, tmp_path: Path) -> Config:
     config = load_config()
+    # Each test gets its own empty page cache.
+    config.cache.path = str(tmp_path / "scraper.db")
     # Fixed here so tests don't depend on tuning in config/scraper.yaml; polling is instant.
     config.gate.challenge_poll_attempts = 3
     config.gate.challenge_poll_interval_s = 0.0
