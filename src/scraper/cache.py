@@ -14,6 +14,7 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass
 
 from .config import CacheConfig
+from .dates import published_date
 from .db import connect
 from .gate import Verdict
 from .page import FetchedPage
@@ -91,7 +92,9 @@ class PageCache:
         except sqlite3.Error:
             log.exception("page cache unreadable; no Published dates from it")
             return {}
-        return {url: published for url, published in rows if isinstance(published, str)}
+        # Normalised again: a page cached before dates were normalised kept its raw one.
+        dates = {url: published_date(published) for url, published in rows}
+        return {url: day for url, day in dates.items() if day is not None}
 
     def put(self, url: str, page: FetchedPage, fetcher: str, verdict: Verdict) -> None:
         """Store a result that passed the Content Gate."""

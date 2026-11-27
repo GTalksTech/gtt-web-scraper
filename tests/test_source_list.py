@@ -166,8 +166,10 @@ def test_the_source_list_is_seeded_from_its_own_config_file() -> None:
 
 
 def write_config(tmp_path: Path, source_list: str) -> Path:
-    (tmp_path / "scraper.yaml").write_text("search:\n  source_list: sources.yaml\n")
-    (tmp_path / "sources.yaml").write_text(source_list)
+    """A config file whose Source List is always source-list.yaml beside it: no setting
+    can point it at another file, so a policy check diffing that file sees every change."""
+    (tmp_path / "scraper.yaml").write_text("search:\n  timeout_s: 5\n")
+    (tmp_path / "source-list.yaml").write_text(source_list)
     return tmp_path / "scraper.yaml"
 
 

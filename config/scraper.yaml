@@ -89,10 +89,9 @@ search:
   # A query's results are served from the search cache for this long (24 hours), so
   # repeated searches don't spend free Provider quota.
   cache_max_age_s: 86400
-  # The Source List (trusted domains boosted, blocked domains dropped) lives in its own
-  # file next to this one, so a policy check can diff it on its own: removing a domain
-  # needs Garrett's approval (ADR 0002). Shaping applies to cached searches at once.
-  source_list: source-list.yaml
+  # The Source List (trusted domains boosted, blocked domains dropped) is always
+  # config/source-list.yaml, beside this file, so a policy check can diff it on its own:
+  # removing a domain needs Garrett's approval (ADR 0002). It is not a setting here.
   # Where each Provider is reached (tests point these at fake Providers).
   tinyfish_url: https://api.search.tinyfish.ai
   exa_url: https://api.exa.ai

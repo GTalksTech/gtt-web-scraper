@@ -39,6 +39,11 @@ def dated(date: str | None, n: int = 1) -> Hit:
         ("tavily", "Wed, 14 Oct 2026 09:30:00 GMT", "2026-10-14"),
         ("tinyfish", "Oct 14, 2026", "2026-10-14"),
         ("tinyfish", "14 October 2026", "2026-10-14"),
+        ("tinyfish", "Sept 14, 2026", "2026-09-14"),
+        ("tinyfish", "Oct. 14, 2026", "2026-10-14"),
+        ("tavily", "2026-10-14 10:00:00 UTC", "2026-10-14"),
+        ("tinyfish", "2 hrs ago", "2027-01-15"),
+        ("tinyfish", "2099-01-01", "unknown"),
         ("tinyfish", "3 days ago", "2027-01-12"),
         ("tinyfish", "5 hours ago", "2027-01-15"),
         ("tinyfish", "sometime last spring", "unknown"),
@@ -99,6 +104,33 @@ def test_a_result_without_a_date_takes_it_from_the_fetched_page(
     _, body = search_v2(client, "pi 5 review")
 
     assert [r["publishedDate"] for r in body["data"]["web"]] == ["2026-10-14", "unknown"]
+
+
+def test_a_page_cached_with_a_raw_date_is_shown_normalised(
+    config: Config, web: FakeWeb, providers: FakeSearchProviders
+) -> None:
+    from dataclasses import replace
+
+    from scraper.cache import PageCache
+    from scraper.gate import Verdict
+    from scraper.page import build_page
+
+    # A copy cached before dates were normalised, as Firecrawl wrote it.
+    url = web.serve("/changelog/4.2", page("short_note.html"))
+    built = build_page(url, url, 200, {}, page("short_note.html").body.decode())
+    PageCache(config.cache, lambda: NOW).put(
+        url, replace(built, published="2026-09-30T22:15:00+02:00"), "paid",
+        Verdict("suspect", "thin", ""),
+    )
+    client = TestClient(create_app(config, clock=lambda: NOW))
+    providers.answer("tinyfish", [Hit("Changelog", url, "Notes.")])
+
+    scraped = client.post("/v2/scrape", json={"url": url}).json()
+    _, searched = search_v2(client, "changelog")
+
+    assert scraped["data"]["metadata"]["cacheState"] == "hit"
+    assert scraped["data"]["publishedDate"] == "2026-09-30"
+    assert searched["data"]["web"][0]["publishedDate"] == "2026-09-30"
 
 
 def test_v1_search_results_carry_the_date(

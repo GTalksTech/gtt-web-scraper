@@ -107,9 +107,10 @@ def add_fetch_tool(server: FastMCP, router: Router) -> None:
         ] = None,
     ) -> CallToolResult:
         """Fetch a web page or PDF as clean markdown, with its title, Published date
-        (YYYY-MM-DD or unknown), the Fetcher that got it, the Content Gate's Verdict and the confidence (accepted, or possibly_partial
-        when the content may be incomplete). Fails explicitly, listing every Fetcher
-        tried, rather than returning a block page."""
+        (YYYY-MM-DD or unknown), the Fetcher that got it, the Content Gate's Verdict and
+        the confidence (accepted, or possibly_partial when the content may be
+        incomplete). Fails explicitly, listing every Fetcher tried, rather than
+        returning a block page."""
         try:
             outcome = await anyio.to_thread.run_sync(
                 lambda: router.get(url, max_age_seconds, fetcher)

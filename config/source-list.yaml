@@ -101,7 +101,6 @@ trusted:
   - postgresql.org
   - pypi.org
   - python.org
-  - readthedocs.io
   - rust-lang.org
   - sqlite.org
   - ubuntu.com
@@ -136,7 +135,12 @@ blocked:
   - ehow.com
   - reference.com
   # Image boards that bury the source
+  - pinterest.ca
+  - pinterest.co.uk
   - pinterest.com
+  - pinterest.com.au
+  - pinterest.de
+  - pinterest.fr
   # Copies of Stack Overflow and GitHub content
   - codegrepper.com
   - itectec.com

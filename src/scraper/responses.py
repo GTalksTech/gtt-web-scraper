@@ -7,6 +7,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any, Literal
 
+from .dates import published_date
 from .gate import Verdict
 from .router import Attempt, Failure
 from .search import ProviderAttempt, SearchFailure, SearchResult
@@ -59,8 +60,9 @@ PUBLISHED_UNKNOWN = "unknown"
 
 
 def published_json(published: str | None) -> str:
-    """A Published date (YYYY-MM-DD) as every interface shows it, or "unknown"."""
-    return published or PUBLISHED_UNKNOWN
+    """A Published date as every interface shows it: YYYY-MM-DD, or "unknown". Read
+    again here so a page cached before dates were normalised shows the same way."""
+    return published_date(published) or PUBLISHED_UNKNOWN
 
 
 def search_result_json(result: SearchResult) -> dict[str, Any]:

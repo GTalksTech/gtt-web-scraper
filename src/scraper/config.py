@@ -96,8 +96,6 @@ class SearchConfig:
     exa_url: str = "https://api.exa.ai"
     tavily_url: str = "https://api.tavily.com"
     duckduckgo_url: str = "https://html.duckduckgo.com"
-    # The Source List's file, relative to this config file's directory.
-    source_list: str = "source-list.yaml"
     # From the environment (TINYFISH_API_KEY, EXA_API_KEY, TAVILY_API_KEY), never from
     # the YAML file. A Provider without its key is skipped. DuckDuckGo needs none.
     tinyfish_api_key: str | None = None
@@ -137,7 +135,14 @@ class SourceList:
             raise ValueError(f"Source List has domains both trusted and blocked: {', '.join(both)}")
 
 
+# The Source List's file, always beside the config file. It is deliberately not a
+# setting: a policy check diffs this one file to catch a removed domain (ADR 0002), and
+# a setting could point search at a different, shorter list.
+SOURCE_LIST_FILE = "source-list.yaml"
+
+
 def load_source_list(path: Path) -> SourceList:
+    """The Source List in the YAML file at `path` (lists `trusted` and `blocked`)."""
     raw: dict[str, Any] = yaml.safe_load(path.read_text()) or {}
     return SourceList(trusted=list(raw.get("trusted") or []), blocked=list(raw.get("blocked") or []))
 
@@ -177,5 +182,5 @@ def load_config(path: str | Path | None = None) -> Config:
             **raw.get("adapters", {}), github_token=os.environ.get("GITHUB_API_TOKEN") or None
         ),
         search=search,
-        source_list=load_source_list(path.parent / search.source_list),
+        source_list=load_source_list(path.parent / SOURCE_LIST_FILE),
     )

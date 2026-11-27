@@ -2,8 +2,9 @@
 Callers use.
 
 Responses keep Firecrawl's shape; our own fields (fetcher, siteAdapter, verdict,
-confidence, publishedDate (YYYY-MM-DD or "unknown"), attempts) are extras that Firecrawl-speaking Callers ignore. Requests
-take one extra of our own: `fetcher`, to force a specific Fetcher.
+confidence, publishedDate as YYYY-MM-DD or "unknown", attempts) are extras that
+Firecrawl-speaking Callers ignore. Requests take one extra of our own: `fetcher`, to
+force a specific Fetcher.
 
 A failure (no Fetcher produced real content, including a real upstream 404) is an
 HTTP 502 with success: false, so a Caller never mistakes it for content.
