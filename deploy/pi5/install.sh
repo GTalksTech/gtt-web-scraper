@@ -30,6 +30,11 @@ command -v docker > /dev/null || die "Docker isn't installed. See 'Install Docke
 docker compose version > /dev/null 2>&1 || die "the Docker Compose plugin is missing: sudo apt-get install docker-compose-plugin"
 ok "Docker and Compose installed"
 
+for tool in curl jq; do
+  command -v "$tool" > /dev/null || die "$tool is missing (gtt-report.sh needs it to send Incidents to GitHub): sudo apt-get install $tool"
+done
+ok "curl and jq installed"
+
 command -v tailscale > /dev/null || die "Tailscale isn't installed on this machine"
 ip="$(tailscale ip -4 2>/dev/null | head -n1 || true)"
 [[ -n "$ip" ]] || die "Tailscale has no IPv4 here. Is it connected? (tailscale status)"
@@ -54,7 +59,7 @@ fi
 ok "hardware watchdog present"
 
 echo "Installing"
-chmod 0755 "$DIR/gtt-up.sh" "$DIR/gtt-canary.sh"
+chmod 0755 "$DIR/gtt-up.sh" "$DIR/gtt-canary.sh" "$DIR/gtt-report.sh"
 mkdir -p "$ETC/systemd/system" "$ETC/systemd/system.conf.d"
 for unit in gtt-web-scraper.service gtt-web-scraper-update.service gtt-web-scraper-update.timer \
             gtt-canary.service gtt-canary.timer; do

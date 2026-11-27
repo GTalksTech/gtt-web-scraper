@@ -2,7 +2,7 @@
 #
 # One health run on pi5: the Canary Set against the live service, plus its
 # Fetchers' rolling success rates. Any Incident found is appended to
-# incidents.jsonl (one JSON object per line) for the Incident pipeline; the
+# incidents.jsonl (one JSON object per line) and sent on to GitHub; the
 # run's account goes to the journal. Run daily by gtt-canary.timer, under the
 # deploy lock so it never overlaps a deploy.
 #
@@ -12,6 +12,8 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
 OUTBOX="$PWD/incidents.jsonl"
+# However the run ends, send its Incidents on to GitHub (gtt-report.sh).
+trap './gtt-report.sh || true' EXIT
 EFFECT="the service isn't answering (the Canary Set couldn't run)"
 
 if ! docker exec gtt-web-scraper python -m scraper.health canary >> "$OUTBOX"; then

@@ -1,0 +1,76 @@
+# Every 2 hours, from outside the house: join the tailnet with the CI key and
+# ask the service on pi5 for its health check. pi5 can't report its own death,
+# so a failure here raises the Incident (ticket #10): "pi5 isn't answering", or
+# "the check can't join the tailnet" when the CI key is refused. Both go
+# straight to Garrett as 🙋 (no code change can fix them) and close themselves
+# as ✅ once a check gets through. A healthy check sends nothing.
+#
+# The CI key (repo secret TS_AUTHKEY, set by the setup wizard) is ephemeral and
+# tagged tag:ci, which the Tailscale policy lets reach only port 3002 on pi5.
+#
+# Actions are pinned to commit SHAs (tag in the comment).
+
+name: reachability
+
+on:
+  schedule:
+    - cron: "17 */2 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: reachability
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      issues: write
+    env:
+      PI5_HOST: pi5
+      SERVICE_PORT: "3002"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - id: tailnet
+        name: Join the tailnet
+        continue-on-error: true
+        uses: tailscale/github-action@99a8333667fff04fdd6cffb46dfd409f8329a7bf # v4.3.0
+        with:
+          authkey: ${{ secrets.TS_AUTHKEY }}
+          tags: tag:ci
+
+      - id: health
+        name: Ask pi5 for its health check
+        if: steps.tailnet.outcome == 'success'
+        run: |
+          set -uo pipefail
+          detail=""
+          answered=false
+          for try in 1 2 3; do
+            if ip="$(sudo -n tailscale ip -4 "$PI5_HOST" 2>&1)" \
+              && out="$(curl -fsS --max-time 20 "http://$ip:$SERVICE_PORT/health" 2>&1)"; then
+              answered=true
+              break
+            fi
+            detail+="try $try: ${ip:-} ${out:-}"$'\n'
+            (( try < 3 )) && sleep 30
+          done
+          echo "answered=$answered" >> "$GITHUB_OUTPUT"
+          eof="EOF_$(openssl rand -hex 8)"
+          { echo "detail<<$eof"; printf '%s\n' "$detail"; echo "$eof"; } >> "$GITHUB_OUTPUT"
+
+      - name: Raise or close the Incident
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PYTHONPATH: src
+          JOINED: ${{ steps.tailnet.outcome == 'success' }}
+          ANSWERED: ${{ steps.health.outputs.answered == 'true' }}
+          DETAIL: ${{ steps.health.outputs.detail || 'joining the tailnet with TS_AUTHKEY failed; see this run''s log' }}
+        run: python3 -m scraper.pipeline reachability --joined "$JOINED" --answered "$ANSWERED"
