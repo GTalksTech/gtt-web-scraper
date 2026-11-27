@@ -1,0 +1,44 @@
+# gtt-web-scraper on pi5 (Raspberry Pi 5, 16 GB, 4 cores, arm64).
+#
+# Lives at ~/gtt-web-scraper/compose.yml next to the wizard's .env file, and is
+# run only by gtt-up.sh (boot + update timer), which sets TAILNET_IP to the
+# Pi's Tailscale IPv4. See deploy/pi5/README.md.
+#
+# pi5 is also the tailnet's exit node and subnet router: these limits keep the
+# scraper from ever starving tailscaled of memory or CPU.
+
+name: gtt-web-scraper
+
+services:
+  scraper:
+    # Built by .github/workflows/image.yml on every merge to main. Pin a
+    # specific build by putting IMAGE_TAG=sha-<7 chars> in .env.
+    image: ghcr.io/gtalkstech/gtt-web-scraper:${IMAGE_TAG:-main}
+    container_name: gtt-web-scraper
+    pull_policy: missing
+    # Tailnet only: published on the Pi's Tailscale IP, never 0.0.0.0, so the
+    # LAN and the internet can't reach it. Refuses to start without the IP.
+    ports:
+      - "${TAILNET_IP:?TAILNET_IP must be the Pi's Tailscale IPv4 (gtt-up.sh sets it)}:3002:3002"
+    env_file:
+      - path: .env
+        required: true
+    restart: unless-stopped
+    # 2 of 4 cores and 2 of 16 GB, no swap beyond that, bounded process count.
+    cpus: 2.0
+    mem_limit: 2g
+    memswap_limit: 2g
+    pids_limit: 512
+    # Under host-wide memory pressure the kernel kills the scraper, not tailscaled.
+    oom_score_adj: 500
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:3002/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

@@ -1,0 +1,18 @@
+# Starts gtt-web-scraper at boot, once Docker and Tailscale are up.
+# Installed by install.sh, which replaces @DIR@ with the deploy dir.
+[Unit]
+Description=gtt-web-scraper (tailnet only)
+Requires=docker.service
+Wants=network-online.target tailscaled.service
+After=network-online.target docker.service tailscaled.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=@DIR@
+ExecStart=/usr/bin/flock /run/lock/gtt-web-scraper.lock @DIR@/gtt-up.sh
+ExecStop=/usr/bin/docker compose down
+TimeoutStartSec=15min
+
+[Install]
+WantedBy=multi-user.target
