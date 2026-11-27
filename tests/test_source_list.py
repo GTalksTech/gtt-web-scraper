@@ -106,7 +106,11 @@ def test_a_provider_whose_results_are_all_blocked_passes_the_query_on(
     assert status == 200
     assert body["provider"] == "exa"
     assert body["attempts"] == [
-        {"provider": "tinyfish", "error": "found only results from blocked domains"}
+        {
+            "provider": "tinyfish",
+            "error": "found only results from blocked domains",
+            "reason": "all_blocked",
+        }
     ]
 
 

@@ -78,7 +78,7 @@ def search_result_json(result: SearchResult) -> dict[str, Any]:
 
 
 def provider_attempt_json(attempt: ProviderAttempt) -> dict[str, str]:
-    return {"provider": attempt.provider, "error": attempt.error}
+    return {"provider": attempt.provider, "error": attempt.error, "reason": attempt.reason}
 
 
 def search_failure_error(query: str, failure: SearchFailure) -> str:

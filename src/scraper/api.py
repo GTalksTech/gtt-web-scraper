@@ -3,8 +3,9 @@ Callers use.
 
 Responses keep Firecrawl's shape; our own fields (fetcher, siteAdapter, verdict,
 confidence, publishedDate as YYYY-MM-DD or "unknown", attempts) are extras that
-Firecrawl-speaking Callers ignore. Requests take one extra of our own: `fetcher`, to
-force a specific Fetcher.
+Firecrawl-speaking Callers ignore. Requests take one extra of our own: on scrape,
+`fetcher`, to force a specific Fetcher or Site Adapter; on search, `provider`, to force
+a specific Search Provider.
 
 A failure (no Fetcher produced real content, including a real upstream 404) is an
 HTTP 502 with success: false, so a Caller never mistakes it for content.
@@ -45,7 +46,10 @@ from .responses import (
     search_result_json,
 )
 from .router import Failure, Router, UnknownFetcher
-from .search import Searcher, SearchFailure, SearchSuccess
+from .search import Searcher, SearchFailure, SearchSuccess, UnknownProvider
+
+# A search forced to a Search Provider that isn't configured.
+UNKNOWN_PROVIDER = "UNKNOWN_PROVIDER"
 
 
 class ScrapeRequest(BaseModel):
@@ -59,7 +63,8 @@ class ScrapeRequest(BaseModel):
     # means the configured default (24 hours).
     maxAge: int | None = Field(default=None, ge=0)  # noqa: N815 (Firecrawl's field name)
     # Our extra: force a live fetch to use only this Fetcher ("plain" or "paid"),
-    # skipping the rest of the Ladder and any Site Adapter. A cached copy is still served.
+    # skipping the rest of the Ladder and any Site Adapter, or only this Site Adapter
+    # ("github"…), with no Ladder to fall back to. A cached copy is still served.
     fetcher: str | None = None
 
 
@@ -74,6 +79,9 @@ class SearchRequest(BaseModel):
     query: str = Field(min_length=1, max_length=2000)
     # Omitted means Firecrawl's default for the API version (v1: 5, v2: 10).
     limit: int | None = Field(default=None, ge=1, le=100)
+    # Our extra: ask only this Search Provider, live (the cache isn't read), and don't
+    # pass the query on if it fails. The Canary Set uses it to check each Provider.
+    provider: str | None = None
 
 
 def create_app(
@@ -90,13 +98,30 @@ def create_app(
     def health() -> dict[str, str]:
         return {"status": "ok"}
 
+    # Rolling success rates, for the health runner (our own endpoints; Firecrawl has
+    # none like them).
     @app.get("/health/fetchers")
     def fetcher_health() -> dict[str, Any]:
-        """Each Fetcher's rolling success rate, for the health runner (our own endpoint;
-        Firecrawl has none like it)."""
+        """Each Fetcher's rolling success rate, in Ladder order."""
         return {
             "windowSeconds": config.health.window_s,
             "fetchers": [rate.to_json() for rate in router.fetcher_rates()],
+        }
+
+    @app.get("/health/providers")
+    def provider_health() -> dict[str, Any]:
+        """Each Search Provider's rolling success rate, in the order a query tries them."""
+        return {
+            "windowSeconds": config.health.window_s,
+            "providers": [rate.to_json() for rate in searcher.provider_rates()],
+        }
+
+    @app.get("/health/adapters")
+    def adapter_health() -> dict[str, Any]:
+        """Each enabled Site Adapter's rolling success rate."""
+        return {
+            "windowSeconds": config.health.window_s,
+            "adapters": [rate.to_json() for rate in router.adapter_rates()],
         }
 
     @app.post("/v1/scrape")
@@ -149,7 +174,15 @@ def create_app(
         )
 
     def search(request: SearchRequest, default_limit: int, shape: WebShape) -> JSONResponse:
-        outcome = searcher.search(request.query, request.limit or default_limit)
+        try:
+            outcome = searcher.search(
+                request.query, request.limit or default_limit, request.provider
+            )
+        except UnknownProvider as exc:
+            return JSONResponse(
+                status_code=422,
+                content={"success": False, "code": UNKNOWN_PROVIDER, "error": str(exc)},
+            )
         if isinstance(outcome, SearchFailure):
             return JSONResponse(
                 status_code=502,

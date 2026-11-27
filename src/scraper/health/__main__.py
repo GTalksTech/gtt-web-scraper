@@ -1,9 +1,10 @@
 """The health runner. Run inside a service container on the Pi:
 
   python -m scraper.health canary [--target URL]
-      Runs the Canary Set against the service at URL (default: this container's own,
-      http://127.0.0.1:3002) and reads its Fetchers' rolling success rates. Daily, and
-      on demand (deploy/pi5/gtt-canary.sh).
+      Runs the Canary Set (pages, Site Adapters and searches) against the service at
+      URL (default: this container's own, http://127.0.0.1:3002) and reads the rolling
+      success rates of its Fetchers, Search Providers and Site Adapters. Daily, and on
+      demand (deploy/pi5/gtt-canary.sh).
 
   python -m scraper.health deploy --live URL --candidate URL --candidate-image ID
       Runs the Canary Set against the live service and a candidate version, and exits
@@ -24,8 +25,8 @@ from dataclasses import replace
 
 from ..config import CANARY_SET_FILE, HealthConfig, config_path, load_config
 from .canary import (
-    CanaryEntry,
     CanaryReport,
+    CanarySet,
     HttpService,
     Service,
     ServiceUnreachable,
@@ -33,30 +34,40 @@ from .canary import (
     run_canary,
 )
 from .incidents import DeployDecision, Incident, incidents_for, judge_deploy
-from .rates import FetcherRate
+from .rates import Subject, SuccessRate
 
 SELF = "http://127.0.0.1:3002"
 KEPT_OUT = 3
 
+# Where the service lists each subject's rolling success rates, and under which key.
+_RATE_ENDPOINTS: dict[Subject, tuple[str, str]] = {
+    "fetcher": ("/health/fetchers", "fetchers"),
+    "provider": ("/health/providers", "providers"),
+    "adapter": ("/health/adapters", "adapters"),
+}
 
-def health_run(entries: list[CanaryEntry], service: Service, config: HealthConfig) -> list[Incident]:
-    """Run the Canary Set against `service`, read its Fetchers' success rates, and
-    return the Incidents they show."""
-    report = run_canary(entries, service)
+
+def health_run(canary: CanarySet, service: Service, config: HealthConfig) -> list[Incident]:
+    """Run the Canary Set against `service`, read its success rates, and return the
+    Incidents they show."""
+    report = run_canary(canary, service)
     _log_report(report)
     return incidents_for(report, _rates(service), config)
 
 
-def _rates(service: Service) -> list[FetcherRate]:
-    try:
-        status, body = service.get("/health/fetchers")
-    except ServiceUnreachable as exc:
-        _log(f"success rates unread: {exc}")
-        return []
-    if status != 200:
-        _log(f"success rates unread: HTTP {status}")
-        return []
-    return [FetcherRate.from_json(r) for r in body.get("fetchers") or []]
+def _rates(service: Service) -> list[SuccessRate]:
+    rates: list[SuccessRate] = []
+    for subject, (path, key) in _RATE_ENDPOINTS.items():
+        try:
+            status, body = service.get(path)
+        except ServiceUnreachable as exc:
+            _log(f"{subject} success rates unread: {exc}")
+            continue
+        if status != 200:
+            _log(f"{subject} success rates unread: HTTP {status}")
+            continue
+        rates += [SuccessRate.from_json(subject, r) for r in body.get(key) or []]
+    return rates
 
 
 def write_incidents(incidents: Sequence[Incident]) -> None:
@@ -66,12 +77,14 @@ def write_incidents(incidents: Sequence[Incident]) -> None:
 
 
 def _log_report(report: CanaryReport) -> None:
-    _log(f"Canary Set against {report.target}: {report.passed} of {len(report.results)} passing")
+    _log(f"Canary Set against {report.target}: {report.passed} of {report.total} passing")
     for failure in report.failures:
         _log(
             f"  failed {failure.entry.url}: expected {failure.entry.expected},"
             f" got {failure.verdict} ({failure.reason}) {failure.detail}".rstrip()
         )
+    for search in report.search_failures:
+        _log(f"  failed {search.key}: {search.outcome} {search.detail}".rstrip())
 
 
 def _log(line: str) -> None:
@@ -79,7 +92,7 @@ def _log(line: str) -> None:
 
 
 def deploy_check(
-    entries: list[CanaryEntry],
+    canary: CanarySet,
     live: Service,
     candidate: Service,
     candidate_image: str,
@@ -87,21 +100,32 @@ def deploy_check(
     recheck_pause_s: float = 30.0,
 ) -> DeployDecision:
     """Run the Canary Set against the live service and a candidate, and decide whether
-    the candidate may take traffic. Pages the candidate failed but the live service
-    passed are asked once more after a pause, so one blip on a real site (a timeout, a
-    429 the live run provoked) doesn't keep a good version out."""
-    live_report = _canary_of(entries, live, wait_s)
-    candidate_report = _canary_of(entries, candidate, wait_s)
+    the candidate may take traffic. Checks the candidate failed but the live service
+    passed are asked once more after a pause, so one blip on a real site or Search
+    Provider (a timeout, a 429 the live run provoked) doesn't keep a good version out."""
+    live_report = _canary_of(canary, live, wait_s)
+    candidate_report = _canary_of(canary, candidate, wait_s)
     if live_report is not None and candidate_report is not None:
-        live_ok = {r.entry.url for r in live_report.results if r.passed}
-        again = [r.entry for r in candidate_report.failures if r.entry.url in live_ok]
-        if again:
-            _log(f"checking {len(again)} page(s) the candidate failed once more")
+        live_ok = {c.key for c in live_report.checks if c.passed}
+        again = CanarySet(
+            pages=[r.entry for r in candidate_report.failures if r.key in live_ok],
+            # Asked of the same Provider again, not of each in turn.
+            searches=[
+                replace(s.canary, provider=s.provider)
+                for s in candidate_report.search_failures
+                if s.key in live_ok
+            ],
+        )
+        if again.pages or again.searches:
+            _log(f"checking {len(again.pages) + len(again.searches)} check(s) the candidate failed once more")
             time.sleep(recheck_pause_s)
-            retried = {r.entry.url: r for r in run_canary(again, candidate).results}
+            retried = run_canary(again, candidate)
+            pages = {r.key: r for r in retried.results}
+            searches = {s.key: s for s in retried.searches}
             candidate_report = replace(
                 candidate_report,
-                results=[retried.get(r.entry.url, r) for r in candidate_report.results],
+                results=[pages.get(r.key, r) for r in candidate_report.results],
+                searches=[searches.get(s.key, s) for s in candidate_report.searches],
             )
             _log_report(candidate_report)
     decision = judge_deploy(live_report, candidate_report, candidate_image)
@@ -123,11 +147,11 @@ def _answers(service: Service, wait_s: float) -> bool:
         time.sleep(2)
 
 
-def _canary_of(entries: list[CanaryEntry], service: Service, wait_s: float) -> CanaryReport | None:
+def _canary_of(canary: CanarySet, service: Service, wait_s: float) -> CanaryReport | None:
     if not _answers(service, wait_s):
         _log(f"{service.name} isn't answering its health check")
         return None
-    report = run_canary(entries, service)
+    report = run_canary(canary, service)
     _log_report(report)
     return report
 
@@ -145,12 +169,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     config = load_config()
-    entries = load_canary_set(config_path().parent / CANARY_SET_FILE)
+    canary_set = load_canary_set(config_path().parent / CANARY_SET_FILE)
     if args.command == "canary":
-        write_incidents(health_run(entries, HttpService(args.target), config.health))
+        write_incidents(health_run(canary_set, HttpService(args.target), config.health))
         return 0
     decision = deploy_check(
-        entries, HttpService(args.live), HttpService(args.candidate), args.candidate_image, args.wait
+        canary_set, HttpService(args.live), HttpService(args.candidate), args.candidate_image, args.wait
     )
     write_incidents(decision.incidents)
     return 0 if decision.promote else KEPT_OUT

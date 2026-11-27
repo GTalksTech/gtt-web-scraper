@@ -145,7 +145,7 @@ def test_unknown_forced_fetcher_is_an_error_naming_the_choices(
     result = mcp.call("fetch", url=url, fetcher="chrome")
 
     assert result.isError is True
-    assert "unknown Fetcher 'chrome'; expected one of: plain, paid" in text(result)
+    assert "unknown Fetcher or Site Adapter 'chrome'; expected one of: plain, paid" in text(result)
     assert web.hits("/article") == 0
 
 
