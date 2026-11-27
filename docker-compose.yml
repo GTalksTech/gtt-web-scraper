@@ -3,7 +3,8 @@
 #               -d '{"url": "https://docs.python.org/3/library/sqlite3.html"}'
 #
 # Thresholds live in config/scraper.yaml, mounted read-only so they change without a rebuild.
-# Pi-specific settings (tailnet-only binding, tighter limits) belong in deployment config.
+# This file is for local runs. pi5 runs deploy/pi5/compose.yml instead (GHCR image, tailnet-only
+# port, Pi limits); see deploy/pi5/README.md.
 
 services:
   scraper:

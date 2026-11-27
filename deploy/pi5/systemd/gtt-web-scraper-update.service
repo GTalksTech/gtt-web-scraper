@@ -1,0 +1,12 @@
+# Pulls a newer gtt-web-scraper image, if GHCR has one, and runs it.
+# Started by gtt-web-scraper-update.timer. Installed by install.sh.
+[Unit]
+Description=gtt-web-scraper: pull and run the newest image
+Requires=docker.service
+After=docker.service tailscaled.service gtt-web-scraper.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=@DIR@
+ExecStart=/usr/bin/flock /run/lock/gtt-web-scraper.lock @DIR@/gtt-up.sh
+TimeoutStartSec=15min

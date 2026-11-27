@@ -1,0 +1,12 @@
+# Checks GHCR for a new gtt-web-scraper image every 10 minutes. The Pi pulls;
+# nothing pushes into the home network.
+[Unit]
+Description=gtt-web-scraper: check for a new image every 10 minutes
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=10min
+RandomizedDelaySec=1min
+
+[Install]
+WantedBy=timers.target
