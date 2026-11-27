@@ -8,3 +8,4 @@ ADR 0002 has the agent's fixes merge themselves once the tests pass. GitHub's ow
 - The workflow runs main's code, never the pull request's, and reads the pull request's files through the API as data, so a pull request can't change the rules it is judged by. Changes to `.github/` or the auto-merge code are themselves held for Garrett.
 - The agent's identity is the Claude GitHub app's login, which any repository can install, so a pull request from a fork never merges, whoever opened it.
 - A held fix is labelled `ready-for-human` and its Incident turns 🙋 with the reasons; Garrett merges or closes it by hand.
+- What counts as weakening is listed in `src/scraper/automerge/policy.py`. A logic change to the Content Gate isn't held: the corpus must still pass.

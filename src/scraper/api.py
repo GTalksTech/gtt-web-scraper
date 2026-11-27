@@ -31,6 +31,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from .config import Config, load_config
+from .health.canary import CHECK_HEADER
 from .health.usage import RequestLog, month_bounds
 from .mcp_server import create_mcp_server, serve_mcp
 from .responses import (
@@ -83,6 +84,11 @@ class SearchRequest(BaseModel):
     # Our extra: ask only this Search Provider, live (the cache isn't read), and don't
     # pass the query on if it fails. The Canary Set uses it to check each Provider.
     provider: str | None = None
+
+
+# The Canary Set's requests carry this header (X-GTT-Check, read as `x_gtt_check`) and
+# are counted as checks, not Callers' requests.
+CANARY_CHECK = CHECK_HEADER["X-GTT-Check"]
 
 
 def create_app(
@@ -146,10 +152,14 @@ def create_app(
 
     @app.post("/v1/scrape")
     @app.post("/v2/scrape")
-    def scrape(request: ScrapeRequest, x_gtt_check: str | None = Header(default=None)) -> JSONResponse:
+    def scrape(
+        request: ScrapeRequest, x_gtt_check: str | None = Header(default=None)
+    ) -> JSONResponse:
         max_age_s = None if request.maxAge is None else request.maxAge / 1000
         try:
-            outcome = router.get(request.url, max_age_s, request.fetcher, check=bool(x_gtt_check))
+            outcome = router.get(
+                request.url, max_age_s, request.fetcher, check=x_gtt_check == CANARY_CHECK
+            )
         except UnknownFetcher as exc:
             return JSONResponse(
                 status_code=422,
@@ -217,14 +227,16 @@ def create_app(
         request: SearchRequest, x_gtt_check: str | None = Header(default=None)
     ) -> JSONResponse:
         # v1: the results are `data` itself.
-        return search(request, 5, lambda web: web, bool(x_gtt_check))
+        check = x_gtt_check == CANARY_CHECK
+        return search(request, default_limit=5, shape=lambda web: web, check=check)
 
     @app.post("/v2/search")
     def search_v2(
         request: SearchRequest, x_gtt_check: str | None = Header(default=None)
     ) -> JSONResponse:
         # v2: results are grouped by source; we only search the web.
-        return search(request, 10, lambda web: {"web": web}, bool(x_gtt_check))
+        check = x_gtt_check == CANARY_CHECK
+        return search(request, default_limit=10, shape=lambda web: {"web": web}, check=check)
 
     return app
 

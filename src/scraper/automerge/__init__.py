@@ -14,6 +14,7 @@ import re
 from dataclasses import dataclass
 from typing import Protocol
 
+from ..incident_issues.github import GitHubError
 from ..incident_issues.notices import HUMAN_LABEL, IssueTracker, closed_as_fixed, held_for_review
 from .policy import Change, weakenings
 
@@ -74,7 +75,13 @@ def review(gh: PullRequestHost, repo: str, sha: str) -> list[str]:
             _hold(gh, pull, weakened)
             log.append(f"#{pull.number}: held for Garrett ({'; '.join(weakened)})")
             continue
-        gh.merge(pull.number, sha)
+        try:
+            gh.merge(pull.number, sha)
+        except GitHubError as exc:
+            # A conflict, or the required check not passed after all: the next test run
+            # (or Garrett) decides; the other pull requests still get theirs.
+            log.append(f"#{pull.number}: GitHub refused the merge ({exc})")
+            continue
         gh.start_workflow(IMAGE_WORKFLOW, BASE)
         for number in pull.fixes():
             issue = gh.issue(number)
@@ -100,8 +107,8 @@ def _not_the_agents(pull: PullRequest, repo: str, sha: str) -> str | None:
 
 def _hold(gh: PullRequestHost, pull: PullRequest, weakened: list[str]) -> None:
     gh.add_pull_label(pull.number, HUMAN_LABEL)
-    shown = weakened[:MAX_REASONS] + [f"and {len(weakened) - MAX_REASONS} more"] * (
-        len(weakened) > MAX_REASONS
-    )
+    shown = weakened[:MAX_REASONS]
+    if len(weakened) > MAX_REASONS:
+        shown.append(f"and {len(weakened) - MAX_REASONS} more")
     for number in pull.fixes():
         held_for_review(gh, number, pull.url, shown)

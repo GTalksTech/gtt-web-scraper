@@ -13,6 +13,7 @@ import pytest
 
 from scraper.automerge import AGENT, PullRequest, review
 from scraper.automerge.policy import Change, weakenings
+from scraper.incident_issues.github import GitHubError
 from scraper.incident_issues.notices import after_attempt, file_incident
 
 from .fakegithub import FakeIssueTracker
@@ -131,6 +132,43 @@ def test_a_change_that_weakens_the_checks_says_how(change: Change, reason: str) 
     ],
 )
 def test_a_change_that_keeps_or_tightens_the_checks_is_not_held(change: Change) -> None:
+    assert weakenings([change]) == []
+
+
+@pytest.mark.parametrize(
+    ("change", "reason"),
+    [
+        (Change("tests/test_health.py", b"x", None), "deletes `tests/test_health.py`, part of the test suite"),
+        (Change("deploy/pi5/test-deploy.sh", b"x", None), "deletes `deploy/pi5/test-deploy.sh`, part of the test suite"),
+        (Change("tests/conftest.py", b"x", b"y"), "changes `tests/conftest.py`, which sets up every test"),
+        (
+            edit("pyproject.toml", 'testpaths = ["tests"]', 'testpaths = ["tests/corpus"]'),
+            "changes how the tests or typecheck run (`[tool.pytest]` in pyproject.toml)",
+        ),
+        (
+            edit("pyproject.toml", 'files = ["src"]', 'files = ["src/scraper/api.py"]'),
+            "changes how the tests or typecheck run (`[tool.mypy]` in pyproject.toml)",
+        ),
+        (
+            edit("src/scraper/config.py", 'CANARY_SET_FILE = "canary.yaml"', 'CANARY_SET_FILE = "other.yaml"'),
+            "changes which file holds the Canary Set or Source List (`CANARY_SET_FILE`)",
+        ),
+    ],
+)
+def test_a_change_that_weakens_the_test_suite_itself_is_held(change: Change, reason: str) -> None:
+    assert reason in weakenings([change])
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        Change("tests/test_health.py", b"x", b"y"),  # editing a test is ordinary work
+        Change("tests/test_new.py", None, b"y"),
+        edit("pyproject.toml", '"ddgs==9.16.1",', '"ddgs==9.17.0",'),  # a dependency bump
+        edit("src/scraper/config.py", 'CANARY_SET_FILE = "canary.yaml"', 'CANARY_SET_FILE = "canary.yaml"  # x'),
+    ],
+)
+def test_ordinary_changes_to_tests_and_config_code_are_not_held(change: Change) -> None:
     assert weakenings([change]) == []
 
 
@@ -278,6 +316,26 @@ def test_a_fix_that_weakens_the_checks_waits_for_garrett() -> None:
     [line] = [l for l in held.body.splitlines() if l.startswith("**Do you need to act?**")]
     assert "merge it" in line and "close it" in line
     assert len(gh.emails) == emails + 1  # the 🙋 comment
+
+
+def test_a_merge_github_refuses_does_not_stop_the_others() -> None:
+    gh = github()
+    issue = agent_fixing(gh)
+    first = agent_pull(gh, issue)
+    second = agent_pull(gh, issue)
+    refused = first.number
+
+    def merge(number: int, sha: str) -> None:
+        if number == refused:
+            raise GitHubError("PUT merge: HTTP 405")
+        gh.merged.append((number, sha))
+
+    gh.merge = merge  # type: ignore[method-assign]
+
+    log = review(gh, REPO, first.head_sha)
+
+    assert gh.merged == [(second.number, second.head_sha)]
+    assert any("405" in line for line in log)
 
 
 def test_a_held_fix_tested_again_does_not_email_again() -> None:
