@@ -72,7 +72,7 @@ fake tailscale '[[ "$*" == "ip -4" ]] && cat "$FAKE/ip" 2>/dev/null; true'
 fake docker 'printf "%s|TAILNET_IP=%s\n" "$*" "${TAILNET_IP:-}" >> "$FAKE/docker.log"
 case "$*" in
   "compose pull"*) [[ -e "$FAKE/pull_fails" ]] && exit 1; cp "$FAKE/remote" "$FAKE/pulled" ;;
-  "compose up"*)   [[ -e "$FAKE/pulled" ]] && mv "$FAKE/pulled" "$FAKE/running"; true ;;
+  "compose up"*)   [[ -e "$FAKE/up_fails" ]] && exit 1; [[ -e "$FAKE/pulled" ]] && mv "$FAKE/pulled" "$FAKE/running"; true ;;
   "inspect --format {{.Image}}"*) cat "$FAKE/running" 2>/dev/null || exit 1 ;;
   "inspect --format"*Health*) cat "$FAKE/health" 2>/dev/null; true ;;
   "compose version"*) echo "Docker Compose version v2.30.0" ;;
@@ -82,7 +82,8 @@ esac'
 fake sleep 'true'
 fake systemctl 'printf "%s\n" "$*" >> "$FAKE/systemctl.log"
 [[ "$*" == "show --property=RuntimeWatchdogUSec"* ]] && echo "RuntimeWatchdogUSec=15s"
-[[ "$*" == "is-active"* ]] && exit 3; true'
+[[ "$*" == "is-active"* ]] && exit 3
+[[ "$*" == "enable --now"* && -e "$FAKE/start_fails" ]] && exit 1; true'
 
 reset_fakes() { rm -f "$FAKE"/*; echo 100.64.0.5 > "$FAKE/ip"; echo sha256:old > "$FAKE/running"; echo sha256:new > "$FAKE/remote"; }
 up() { PATH="$BIN:$PATH" TAILNET_WAIT_S="${WAIT:-0}" bash "$PI/gtt-up.sh" > "$FAKE/out.log" 2>&1; }
@@ -97,7 +98,8 @@ check "pulls, then brings the service up" ran_before "compose pull" "compose up 
 check "compose sees the Pi's tailnet IP" grep -q "^compose up -d.*TAILNET_IP=100.64.0.5$" "$FAKE/docker.log"
 check "the new image is running" test "$(cat "$FAKE/running")" = "sha256:new"
 check "logs the deploy, old and new image" grep -q "sha256:old.*sha256:new\|sha256:new.*sha256:old" "$FAKE/out.log"
-check "prunes only dangling images" grep -qx "image prune -f|.*" "$FAKE/docker.log"
+check "prunes only this project's dangling images" \
+  grep -q "^image prune -f --filter label=org.opencontainers.image.source=https://github.com/GTalksTech/gtt-web-scraper|" "$FAKE/docker.log"
 
 reset_fakes; echo sha256:new > "$FAKE/running"
 up
@@ -108,9 +110,13 @@ check "no tailnet IP: fails" fails up
 check "no tailnet IP: never starts the service" fails grep -qs "^compose up" "$FAKE/docker.log"
 
 reset_fakes; touch "$FAKE/pull_fails"
-check "registry unreachable: reports failure" fails up
+check "registry unreachable: still succeeds (the service is up)" up
+check "registry unreachable: warns in the journal" grep -q "warning: pulling from GHCR failed" "$FAKE/out.log"
 check "registry unreachable: still brings up the image it has" ran "compose up -d"
 check "registry unreachable: keeps the old image" test "$(cat "$FAKE/running")" = "sha256:old"
+
+reset_fakes; touch "$FAKE/up_fails"
+check "service fails to start (e.g. IP not on tailscale0 yet): fails so systemd retries" fails up
 
 reset_fakes; echo unhealthy > "$FAKE/health"
 up
@@ -134,6 +140,9 @@ check "boot unit runs gtt-up.sh from the deploy dir" \
   grep -q "^ExecStart=.*flock .* $PI/gtt-up.sh$" "$U/gtt-web-scraper.service"
 check "boot unit waits for docker and tailscaled" \
   grep -q "^After=.*docker.service.*tailscaled.service" "$U/gtt-web-scraper.service"
+check "boot unit retries until the service is up" grep -qx "Restart=on-failure" "$U/gtt-web-scraper.service"
+check "boot unit can stop the service without TAILNET_IP set" \
+  grep -qx "ExecStop=/usr/bin/env TAILNET_IP=127.0.0.1 /usr/bin/docker compose down" "$U/gtt-web-scraper.service"
 check "update unit runs gtt-up.sh under the same lock" \
   test "$(grep ^ExecStart= "$U/gtt-web-scraper.service")" = "$(grep ^ExecStart= "$U/gtt-web-scraper-update.service")"
 check "timer pulls on a schedule" grep -q "^OnUnitActiveSec=" "$U/gtt-web-scraper-update.timer"
@@ -156,6 +165,11 @@ check "  and says how to turn the memory cgroup on" grep -q "cgroup_enable=memor
 ready_pi; rm "$T/dev/watchdog0"
 check "refuses without a hardware watchdog device" fails install_pi
 check "  and says how to enable it" grep -q "dtparam=watchdog=on" "$FAKE/install.log"
+
+ready_pi; touch "$FAKE/start_fails"
+check "first deploy failing stops the install" fails install_pi
+check "  and points at the journal" grep -q "journalctl -u gtt-web-scraper" "$FAKE/install.log"
+check "  and at the GHCR visibility step" grep -q "public on GHCR" "$FAKE/install.log"
 
 ready_pi; rm "$FAKE/ip"
 check "refuses when Tailscale has no IP" fails install_pi

@@ -20,6 +20,8 @@ services:
     # LAN and the internet can't reach it. Refuses to start without the IP.
     ports:
       - "${TAILNET_IP:?TAILNET_IP must be the Pi's Tailscale IPv4 (gtt-up.sh sets it)}:3002:3002"
+    # config/scraper.yaml is baked into the image (no mount), so a threshold
+    # change reaches the Pi as a new image, through CI and its tests.
     env_file:
       - path: .env
         required: true

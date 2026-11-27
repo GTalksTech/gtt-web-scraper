@@ -66,7 +66,10 @@ systemctl daemon-reexec
 ok "hardware watchdog on ($(systemctl show --property=RuntimeWatchdogUSec | cut -d= -f2))"
 
 echo "Starting (the first pull of the image can take a few minutes)"
-systemctl enable --now gtt-web-scraper.service gtt-web-scraper-update.timer
+systemctl enable --now gtt-web-scraper.service gtt-web-scraper-update.timer \
+  || die "the first deploy failed; systemd keeps retrying every 30 s. See why with:
+  journalctl -u gtt-web-scraper -n 30
+  Most likely the image isn't public on GHCR yet (deploy/pi5/README.md, step 2)."
 # enable --now does nothing for a service already active: run one deploy pass
 # so a re-install applies a changed compose.yml straight away, without downtime.
 systemctl start gtt-web-scraper-update.service

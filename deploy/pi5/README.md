@@ -65,10 +65,13 @@ Do these in order. Steps 1 and 2 need GitHub; the rest happen on this Mac and pi
 - **Deploy now** instead of waiting for the timer: `ssh pi5 sudo systemctl start gtt-web-scraper-update`.
 - **Pin or roll back** to an earlier build: add `IMAGE_TAG=sha-<7 chars>` (from the commit) to `~/gtt-web-scraper/.env` on pi5, then deploy now. Remove the line to follow `main` again.
 - **Changed a file in this folder** (compose.yml, units, scripts)? Those don't ride along with the image. Repeat steps 5 and 6; re-installing applies them without downtime.
+- **Stop it** (the timer would otherwise start it again within 10 minutes): `ssh pi5 sudo systemctl disable --now gtt-web-scraper-update.timer gtt-web-scraper`. Re-run step 6 to bring it back.
+- **Port:** 3002 is fixed in `compose.yml`. If you gave the wizard a different port, change it there too (and in the Tailscale policy).
 - **Service logs:** `ssh pi5 docker logs --tail 100 gtt-web-scraper`.
 
 ## Troubleshooting
 
 - `verify-from-mac.sh` gets no answer: `ssh pi5 systemctl status gtt-web-scraper gtt-web-scraper-update.timer` and `ssh pi5 docker ps -a`. A unit failing with "no Tailscale IPv4" means tailscaled wasn't connected; it retries on the next timer run.
 - `pulling from GHCR failed` in the journal: the package isn't public (step 2), or pi5 has no internet. The image already on the Pi keeps running.
+- Right after a reboot the boot unit may fail once or twice ("cannot assign requested address") while Tailscale brings up its IP; it retries every 30 s on its own.
 - The Tailscale policy from the wizard only lets `tag:ci` reach port 3002 on pi5; your own devices reach it through the `autogroup:member` rule.

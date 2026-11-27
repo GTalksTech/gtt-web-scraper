@@ -6,12 +6,12 @@
 #
 #   deploy/pi5/verify-from-mac.sh [LAN_IP]
 #
-# HOST (default pi5) and PORT (default 3002) can be overridden in the environment.
+# PI_HOST (default pi5) and PI_PORT (default 3002) can be overridden in the environment.
 
 set -euo pipefail
 
-HOST="${HOST:-pi5}"
-PORT="${PORT:-3002}"
+HOST="${PI_HOST:-pi5}"
+PORT="${PI_PORT:-3002}"
 LAN_IP="${1:-}"
 URL="https://docs.python.org/3/library/sqlite3.html"
 

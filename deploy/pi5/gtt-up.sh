@@ -7,8 +7,9 @@
 #
 # Safe to run by hand: sudo ~/gtt-web-scraper/gtt-up.sh
 #
-# Exits non-zero if the tailnet IP never appears, or if the pull failed (the
-# image already here is still brought up, so the service stays available).
+# Exits non-zero if the service isn't up at the end (no tailnet IP, or Docker
+# couldn't start it), so the boot unit retries. A failed pull only warns: the
+# image already here keeps serving, and the next timer run tries again.
 #
 # Not yet: running the Canary Set against a new image before it takes traffic
 # (spec #1, deploy). Today a new image replaces the old one directly.
@@ -35,10 +36,8 @@ done
 export TAILNET_IP="$ip"
 
 before="$(image_id)"
-pull_ok=1
 if ! docker compose pull --quiet; then
   log "warning: pulling from GHCR failed; running the image already on the Pi"
-  pull_ok=0
 fi
 docker compose up -d --remove-orphans
 after="$(image_id)"
@@ -55,6 +54,5 @@ if [[ "$health" == unhealthy ]]; then
 fi
 
 # Replaced images become dangling; tagged ones (a pinned IMAGE_TAG) are kept.
-docker image prune -f > /dev/null || true
-
-(( pull_ok )) || exit 1
+# Only this project's images (CI labels them), never another project's on pi5.
+docker image prune -f --filter label=org.opencontainers.image.source=https://github.com/GTalksTech/gtt-web-scraper > /dev/null || true
