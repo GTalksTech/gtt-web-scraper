@@ -271,6 +271,7 @@ def test_v1_search_returns_results_as_a_list(
             "url": "https://example.org/review",
             "snippet": "A long review.",
             "provider": "tinyfish",
+            "publishedDate": "2026-10-14",
         }
     ]
 

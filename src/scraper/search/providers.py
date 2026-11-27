@@ -25,8 +25,8 @@ class SearchResult:
     snippet: str
     # The Search Provider that found it.
     provider: str
-    # The publication date the Provider reported, as it reported it; None when it
-    # gave none.
+    # The Published date. As stored in the search cache, the Provider's own words
+    # ("Oct 14, 2026", "3 days ago"); as shown to Callers, YYYY-MM-DD. None if unknown.
     published: str | None = None
 
 

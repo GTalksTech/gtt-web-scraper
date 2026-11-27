@@ -2,15 +2,17 @@
 Callers use.
 
 Responses keep Firecrawl's shape; our own fields (fetcher, siteAdapter, verdict,
-confidence, publishedDate, attempts) are extras that Firecrawl-speaking Callers ignore. Requests
-take one extra of our own: `fetcher`, to force a specific Fetcher.
+confidence, publishedDate as YYYY-MM-DD or "unknown", attempts) are extras that
+Firecrawl-speaking Callers ignore. Requests take one extra of our own: `fetcher`, to
+force a specific Fetcher.
 
 A failure (no Fetcher produced real content, including a real upstream 404) is an
 HTTP 502 with success: false, so a Caller never mistakes it for content.
 
 Search takes a query and a limit and answers with title, URL and description per result
-(v1: a list in `data`; v2: `data.web`), plus our extras: each result's `provider` and
-`snippet`, and the search's `provider`, `cacheState`, `cachedAt` and failed `attempts`. Search
+(v1: a list in `data`; v2: `data.web`), re-ranked by the Source List, plus our extras:
+each result's `provider`, `snippet` and `publishedDate` (YYYY-MM-DD or "unknown", as on
+scrape), and the search's `provider`, `cacheState`, `cachedAt` and failed `attempts`. Search
 never calls Firecrawl. When every Search Provider fails, it is an HTTP 502 with
 success: false naming each Provider's error, never an empty list.
 
@@ -38,6 +40,7 @@ from .responses import (
     failure_error,
     iso_utc,
     provider_attempt_json,
+    published_json,
     search_failure_json,
     search_result_json,
 )
@@ -130,7 +133,7 @@ def create_app(
                     "siteAdapter": outcome.site_adapter,
                     "verdict": outcome.verdict.decision,
                     "confidence": confidence(outcome.verdict),
-                    "publishedDate": page.published,
+                    "publishedDate": published_json(page.published),
                     "attempts": [attempt_json(a) for a in outcome.attempts],
                 },
             }

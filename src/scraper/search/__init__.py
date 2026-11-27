@@ -7,18 +7,21 @@ to the next. Firecrawl is never a Search Provider: search spends no Paid Fetcher
 
 The cache keeps each Provider's answer as it came. Shaping that answer for the Caller
 (`_present`) happens after the cache, on every search, so a change to how results are
-ranked (the Source List, ticket #13) applies to cached searches at once.
+ranked (the Source List) applies to cached searches at once.
 """
 
 from __future__ import annotations
 
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
+from ..cache import PageCache
 from ..config import Config
+from ..dates import published_date
 from .cache import SearchCache
 from .providers import ProviderError, SearchProvider, SearchResult, build_providers
+from .source_list import SourceRanking
 
 __all__ = [
     "ProviderAttempt",
@@ -59,6 +62,9 @@ class Searcher:
         self._providers: list[SearchProvider] = build_providers(config.search)
         self.cache_max_age_s = config.search.cache_max_age_s
         self._cache = SearchCache(config.cache.resolved_path(), self.cache_max_age_s, clock)
+        self._ranking = SourceRanking(config.source_list)
+        self._pages = PageCache(config.cache, clock)
+        self._clock = clock
 
     @property
     def providers(self) -> list[str]:
@@ -70,9 +76,11 @@ class Searcher:
         searched recently (24 hours by default) for at least as many results, else from
         the first Provider that answers with results."""
         cached = self._cache.get(query, limit)
-        if cached is not None and cached.results:
+        # A cached answer the Source List now blocks entirely is searched again.
+        shown = self._present(cached.results, limit, cached.searched_at) if cached else []
+        if cached is not None and shown:
             return SearchSuccess(
-                results=self._present(cached.results, limit),
+                results=shown,
                 provider=cached.results[0].provider,
                 attempts=[],
                 cached_at=cached.searched_at,
@@ -87,12 +95,27 @@ class Searcher:
             if not results:
                 attempts.append(ProviderAttempt(provider.name, "found no results"))
                 continue
+            shown = self._present(results, limit, self._clock())
+            if not shown:
+                attempts.append(
+                    ProviderAttempt(provider.name, "found only results from blocked domains")
+                )
+                continue
             self._cache.put(query, limit, results)
-            return SearchSuccess(self._present(results, limit), provider.name, attempts)
+            return SearchSuccess(shown, provider.name, attempts)
         return SearchFailure(attempts)
 
-    def _present(self, results: list[SearchResult], limit: int) -> list[SearchResult]:
-        """A Provider's results as the Caller sees them. Source List re-ranking and
-        Published dates (ticket #13) go here; each result already carries the date its
-        Provider reported, if any, unnormalised and not yet shown to Callers."""
-        return results[:limit]
+    def _present(
+        self, results: list[SearchResult], limit: int, searched_at: float
+    ) -> list[SearchResult]:
+        """A Provider's results as the Caller sees them: blocked domains dropped and
+        trusted ones first (the Source List), trimmed to `limit`, each with its
+        Published date as YYYY-MM-DD: the Provider's, read as of when it was searched,
+        else the page's own when the page is in the page cache, else None (unknown)."""
+        shown = self._ranking.rank(results)[:limit]
+        dated = [replace(r, published=published_date(r.published, searched_at)) for r in shown]
+        undated = [r.url for r in dated if r.published is None]
+        from_pages = self._pages.published_dates(undated)
+        return [
+            replace(r, published=from_pages[r.url]) if r.url in from_pages else r for r in dated
+        ]

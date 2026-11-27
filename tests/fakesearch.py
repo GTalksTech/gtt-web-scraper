@@ -5,7 +5,7 @@ Provider's real wire format (checked against each Provider's docs, 2026-11):
 
 - TinyFish: GET /tinyfish/?query=… with X-API-Key; {"results": [{title, url, snippet, date?}]}
 - Exa: POST /exa/search with x-api-key; {"results": [{title, url, publishedDate, highlights}]}
-- Tavily: POST /tavily/search with Authorization: Bearer; {"results": [{title, url, content}]}
+- Tavily: POST /tavily/search with Authorization: Bearer; {"results": [{title, url, content, published_date?}]}
 - DuckDuckGo: POST /duckduckgo/html/ (form q=…); the HTML results page ddgs parses.
 
 A test tells each Provider to answer with results, fail (HTTP 500) or report an
@@ -152,7 +152,13 @@ class FakeSearchProviders:
             body = {
                 "query": query,
                 "results": [
-                    {"title": h.title, "url": h.url, "content": h.snippet, "score": 0.9}
+                    {
+                        "title": h.title,
+                        "url": h.url,
+                        "content": h.snippet,
+                        "score": 0.9,
+                        **({"published_date": h.date} if h.date else {}),
+                    }
                     for h in results
                 ],
                 "response_time": 0.1,

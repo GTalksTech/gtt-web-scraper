@@ -9,6 +9,7 @@ import trafilatura
 from lxml import etree
 
 from . import pdf
+from .dates import published_date
 
 
 @dataclass(frozen=True)
@@ -20,7 +21,8 @@ class FetchedPage:
     html: str
     title: str | None
     markdown: str  # extracted main content; "" when nothing was found
-    published: str | None  # Published date, when the page's metadata gives one
+    # Published date (YYYY-MM-DD), when the page's metadata gives one
+    published: str | None
 
 
 def build_page(
@@ -82,7 +84,8 @@ def page_with_markdown(
         # The raw <title>, as Firecrawl reports it; the Gate reads it too.
         title=_title_tag(html) or (meta.title if meta and meta.title else None) or title,
         markdown=markdown.strip(),
-        published=(meta.date if meta and meta.date else None) or published,
+        published=published_date(meta.date if meta and meta.date else None)
+        or published_date(published),
     )
 
 

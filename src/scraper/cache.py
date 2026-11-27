@@ -14,6 +14,7 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass
 
 from .config import CacheConfig
+from .dates import published_date
 from .db import connect
 from .gate import Verdict
 from .page import FetchedPage
@@ -74,6 +75,26 @@ class PageCache:
             verdict=Verdict(**json.loads(verdict)),
             fetched_at=fetched_at,
         )
+
+    def published_dates(self, urls: list[str]) -> dict[str, str]:
+        """The Published date of each of `urls` that is cached with one, however old
+        the copy (a page's publication date doesn't go stale)."""
+        if not urls:
+            return {}
+        marks = ", ".join("?" * len(urls))
+        try:
+            with connect(self._path) as db:
+                rows = db.execute(
+                    f"SELECT url, json_extract(page, '$.published') FROM pages"  # noqa: S608
+                    f" WHERE url IN ({marks})",
+                    urls,
+                ).fetchall()
+        except sqlite3.Error:
+            log.exception("page cache unreadable; no Published dates from it")
+            return {}
+        # Normalised again: a page cached before dates were normalised kept its raw one.
+        dates = {url: published_date(published) for url, published in rows}
+        return {url: day for url, day in dates.items() if day is not None}
 
     def put(self, url: str, page: FetchedPage, fetcher: str, verdict: Verdict) -> None:
         """Store a result that passed the Content Gate."""

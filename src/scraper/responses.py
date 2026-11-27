@@ -7,6 +7,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any, Literal
 
+from .dates import published_date
 from .gate import Verdict
 from .router import Attempt, Failure
 from .search import ProviderAttempt, SearchFailure, SearchResult
@@ -54,15 +55,25 @@ def failure_error(url: str, failure: Failure) -> str:
     return error
 
 
+# What Callers see as the Published date when the Provider and the page give none.
+PUBLISHED_UNKNOWN = "unknown"
+
+
+def published_json(published: str | None) -> str:
+    """A Published date as every interface shows it: YYYY-MM-DD, or "unknown". Read
+    again here so a page cached before dates were normalised shows the same way."""
+    return published_date(published) or PUBLISHED_UNKNOWN
+
+
 def search_result_json(result: SearchResult) -> dict[str, Any]:
     """One search result as both interfaces show it. The API also writes the snippet
-    as Firecrawl's `description`. (The Published date joins it with ticket #13, once
-    it is normalised.)"""
+    as Firecrawl's `description`."""
     return {
         "title": result.title,
         "url": result.url,
         "snippet": result.snippet,
         "provider": result.provider,
+        "publishedDate": published_json(result.published),
     }
 
 

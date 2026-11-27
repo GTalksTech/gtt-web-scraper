@@ -1,0 +1,150 @@
+# The Source List: domains search trusts (boosted above other results) and blocks
+# (dropped from results). An entry covers the domain and all its subdomains
+# (github.com covers docs.github.com); a blocked entry beats a trusted one above it
+# (blocking spam.github.com would drop it even though github.com is trusted). It
+# shapes which sources Callers see; it does not judge whether any claim is true.
+#
+# Policy (ADR 0002, spec #1 story 51): the fixing agent may ADD domains to either list.
+# Removing a domain, or moving one from blocked to trusted, needs Garrett's approval and
+# is excluded from auto-merge. Keep one bare domain per line (no scheme, no path) so a
+# policy check can diff this file line by line: any removed line is a loosening.
+#
+# Seeded 2026-11 for G Talks Tech research (network engineering, AI, tech) plus
+# general primary sources. Domains on neither list are shown in the Provider's order.
+
+trusted:
+  # Standards bodies and registries
+  - 3gpp.org
+  - ecma-international.org
+  - ieee.org
+  - ietf.org
+  - iana.org
+  - iso.org
+  - itu.int
+  - nist.gov
+  - rfc-editor.org
+  - unicode.org
+  - w3.org
+  - whatwg.org
+  - wi-fi.org
+  # Internet registries and operator communities
+  - afrinic.net
+  - apnic.net
+  - arin.net
+  - lacnic.net
+  - nanog.org
+  - peeringdb.com
+  - ripe.net
+  # Networking vendors and projects
+  - arista.com
+  - arubanetworks.com
+  - cisco.com
+  - cloudflare.com
+  - f5.com
+  - fortinet.com
+  - frrouting.org
+  - isc.org
+  - juniper.net
+  - mikrotik.com
+  - netgate.com
+  - nlnetlabs.nl
+  - nokia.com
+  - openwrt.org
+  - opnsense.org
+  - paloaltonetworks.com
+  - tailscale.com
+  - ui.com
+  - wireguard.com
+  - wireshark.org
+  # AI labs, models and tooling
+  - ai.google.dev
+  - ai.meta.com
+  - anthropic.com
+  - arxiv.org
+  - claude.com
+  - deepmind.google
+  - huggingface.co
+  - mistral.ai
+  - modelcontextprotocol.io
+  - nvidia.com
+  - ollama.com
+  - openai.com
+  - pytorch.org
+  - research.google
+  # Platforms, clouds and hardware vendors (official docs and blogs)
+  - amd.com
+  - apple.com
+  - arm.com
+  - aws.amazon.com
+  - cloud.google.com
+  - developers.google.com
+  - intel.com
+  - microsoft.com
+  - raspberrypi.com
+  # Code hosting, languages and open-source projects
+  - apache.org
+  - archlinux.org
+  - cncf.io
+  - crates.io
+  - debian.org
+  - developer.mozilla.org
+  - docker.com
+  - github.com
+  - gitlab.com
+  - go.dev
+  - kernel.org
+  - kubernetes.io
+  - linuxfoundation.org
+  - nodejs.org
+  - npmjs.com
+  - pkg.go.dev
+  - postgresql.org
+  - pypi.org
+  - python.org
+  - rust-lang.org
+  - sqlite.org
+  - ubuntu.com
+  # Government security advisories
+  - cisa.gov
+  # Research and professional bodies
+  - acm.org
+  - nature.com
+  - science.org
+  - usenix.org
+  # Reputable outlets
+  - apnews.com
+  - arstechnica.com
+  - bbc.co.uk
+  - bbc.com
+  - bleepingcomputer.com
+  - krebsonsecurity.com
+  - lwn.net
+  - packetpushers.net
+  - reuters.com
+  - servethehome.com
+  - theregister.com
+  - theverge.com
+  - wired.com
+
+blocked:
+  # Content farms and answer farms
+  - answers.com
+  - ask.com
+  - brainly.com
+  - coursehero.com
+  - ehow.com
+  - reference.com
+  # Image boards that bury the source
+  - pinterest.ca
+  - pinterest.co.uk
+  - pinterest.com
+  - pinterest.com.au
+  - pinterest.de
+  - pinterest.fr
+  # Copies of Stack Overflow and GitHub content
+  - codegrepper.com
+  - itectec.com
+  - newbedev.com
+  - programmersought.com
+  - stackoom.com
+  - thecodeteacher.com
