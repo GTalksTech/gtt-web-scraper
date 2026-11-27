@@ -81,6 +81,28 @@ class AdaptersConfig:
 
 
 @dataclass
+class SearchConfig:
+    # Search Providers in the order a query tries them. A failing or out-of-quota
+    # Provider passes the query to the next. Firecrawl is never one of them.
+    providers: list[str] = field(
+        default_factory=lambda: ["tinyfish", "exa", "tavily", "duckduckgo"]
+    )
+    timeout_s: float = 15.0
+    # How long a query's results are served from the search cache.
+    cache_max_age_s: float = 86400.0
+    # Where each Provider is reached. Tests point these at fake Providers.
+    tinyfish_url: str = "https://api.search.tinyfish.ai"
+    exa_url: str = "https://api.exa.ai"
+    tavily_url: str = "https://api.tavily.com"
+    duckduckgo_url: str = "https://html.duckduckgo.com"
+    # From the environment (TINYFISH_API_KEY, EXA_API_KEY, TAVILY_API_KEY), never from
+    # the YAML file. A Provider without its key is skipped. DuckDuckGo needs none.
+    tinyfish_api_key: str | None = None
+    exa_api_key: str | None = None
+    tavily_api_key: str | None = None
+
+
+@dataclass
 class Config:
     ladder: list[str] = field(default_factory=lambda: ["plain", "paid"])
     plain: PlainConfig = field(default_factory=PlainConfig)
@@ -89,6 +111,7 @@ class Config:
     cache: CacheConfig = field(default_factory=CacheConfig)
     sites: SitesConfig = field(default_factory=SitesConfig)
     adapters: AdaptersConfig = field(default_factory=AdaptersConfig)
+    search: SearchConfig = field(default_factory=SearchConfig)
 
 
 def load_config(path: str | Path | None = None) -> Config:
@@ -105,5 +128,11 @@ def load_config(path: str | Path | None = None) -> Config:
         sites=SitesConfig(**raw.get("sites", {})),
         adapters=AdaptersConfig(
             **raw.get("adapters", {}), github_token=os.environ.get("GITHUB_API_TOKEN") or None
+        ),
+        search=SearchConfig(
+            **raw.get("search", {}),
+            tinyfish_api_key=os.environ.get("TINYFISH_API_KEY") or None,
+            exa_api_key=os.environ.get("EXA_API_KEY") or None,
+            tavily_api_key=os.environ.get("TAVILY_API_KEY") or None,
         ),
     )

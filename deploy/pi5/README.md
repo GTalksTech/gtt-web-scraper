@@ -66,13 +66,15 @@ Do these in order. Steps 1 and 2 need GitHub; the rest happen on this Mac and pi
 
 The service offers an MCP `fetch` tool at `http://pi5:3002/mcp`, on the same port as the scrape API, so it's tailnet only too. It takes a URL, an optional `max_age_seconds` (0 forces a live fetch) and an optional `fetcher` to force (`plain` or `paid`). It returns the markdown with the title, the Fetcher used, the Verdict and the confidence, or an explicit failure listing every Fetcher tried.
 
+A `search` tool sits next to it. It takes a query and an optional `limit` (default 10) and returns title, URL, snippet and the Search Provider used for each result. Providers are tried in the order set in `config/scraper.yaml` (TinyFish, Exa, Tavily, DuckDuckGo), results are cached for 24 hours, and search never spends Firecrawl credits. When every Provider fails, it returns an explicit failure naming each Provider's error. The same search answers Firecrawl-style at `/v1/search` and `/v2/search`.
+
 Add it once on each machine, with Tailscale connected. The command is the same on the MacBook (Terminal) and on GM-Desktop (PowerShell):
 
 ```sh
 claude mcp add --transport http --scope user gtt-scraper http://pi5:3002/mcp
 ```
 
-`--scope user` makes it available in every project on that machine. Then check with `claude mcp list`: it should show `gtt-scraper` as connected. In a session, `/mcp` lists it with its `fetch` tool, which Claude sees as `mcp__gtt-scraper__fetch`.
+`--scope user` makes it available in every project on that machine. Then check with `claude mcp list`: it should show `gtt-scraper` as connected. In a session, `/mcp` lists it with its `fetch` and `search` tools, which Claude sees as `mcp__gtt-scraper__fetch` and `mcp__gtt-scraper__search`.
 
 - **`pi5` doesn't resolve** (MagicDNS off on that machine): use the Pi's tailnet IP. Get it with `tailscale ip -4 pi5`, then `claude mcp remove gtt-scraper --scope user` and add it again with `http://100.x.y.z:3002/mcp`.
 - **Failed to connect:** check the service answers from that machine with `curl http://pi5:3002/health` (on Windows, `curl.exe`). If it doesn't, Tailscale isn't connected there or the service is down; see Troubleshooting. If it does, check the MCP endpoint itself (`deploy/pi5/verify-from-mac.sh` does this on the Mac). On GM-Desktop, in PowerShell:

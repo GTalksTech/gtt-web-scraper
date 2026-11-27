@@ -72,3 +72,25 @@ adapters:
   youtube_url: https://www.youtube.com
   reddit_url: https://www.reddit.com
   github_api_url: https://api.github.com
+
+search:
+  # Search Providers in the order a query tries them. A Provider that fails, runs out of
+  # quota, has no key in .env or finds nothing passes the query to the next; when every
+  # one fails, the Caller gets an explicit failure naming each Provider's error. Re-order
+  # or replace Providers here. Firecrawl is never a Search Provider (it spends quota).
+  # Keys come from TINYFISH_API_KEY, EXA_API_KEY and TAVILY_API_KEY in .env; DuckDuckGo
+  # needs none.
+  providers:
+    - tinyfish
+    - exa
+    - tavily
+    - duckduckgo
+  timeout_s: 15
+  # A query's results are served from the search cache for this long (24 hours), so
+  # repeated searches don't spend free Provider quota.
+  cache_max_age_s: 86400
+  # Where each Provider is reached (tests point these at fake Providers).
+  tinyfish_url: https://api.search.tinyfish.ai
+  exa_url: https://api.exa.ai
+  tavily_url: https://api.tavily.com
+  duckduckgo_url: https://html.duckduckgo.com
