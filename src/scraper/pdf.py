@@ -26,19 +26,22 @@ class PdfText:
 
 
 def is_pdf(content_type: str, body: bytes) -> bool:
-    """Whether a response is a PDF: by its content type, or by the PDF header when the
-    server labels it something generic like application/octet-stream."""
-    return "application/pdf" in content_type.lower() or body.lstrip()[:5] == b"%PDF-"
+    """Whether a response is a PDF, decided by the body: the PDF header within the first
+    1024 bytes (where readers accept it). Servers mislabel both ways, sending PDFs as
+    application/octet-stream and HTML error pages as application/pdf, so the content
+    type only rules out bodies it says are HTML."""
+    return b"%PDF-" in body[:1024] and "html" not in content_type.lower()
 
 
 def extract(body: bytes) -> PdfText:
+    """The PDF's text layer as markdown, one paragraph per page, plus its document info."""
     try:
         reader = PdfReader(io.BytesIO(body))
         pages = [page.extract_text() or "" for page in reader.pages]
     # A PDF from the wild can break the parser in many ways (pypdf's own errors, but
     # also KeyError, ValueError, ...). An unreadable PDF is just one with no text: the
     # Gate rejects it and the request escalates.
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 (any parser failure)
         log.warning("PDF extraction failed: %s", exc)
         return PdfText("", None, None)
     # Pages become paragraphs; blank lines inside a page's text are dropped so a page

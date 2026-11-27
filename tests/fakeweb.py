@@ -22,9 +22,14 @@ class FakeResponse:
     content_type: str = "text/html; charset=utf-8"
 
 
-def page(name: str, status: int = 200, headers: dict[str, str] | None = None) -> FakeResponse:
+def page(
+    name: str,
+    status: int = 200,
+    headers: dict[str, str] | None = None,
+    content_type: str = "text/html; charset=utf-8",
+) -> FakeResponse:
     """A fixture page from tests/fixtures/pages."""
-    return FakeResponse((PAGES / name).read_bytes(), status, headers or {})
+    return FakeResponse((PAGES / name).read_bytes(), status, headers or {}, content_type)
 
 
 @dataclass

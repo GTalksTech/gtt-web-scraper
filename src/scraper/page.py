@@ -49,8 +49,14 @@ def build_pdf_page(
     Published date come from the PDF's document info."""
     text = pdf.extract(body)
     return page_with_markdown(
-        requested_url, final_url, status, headers, html="", markdown=text.markdown,
-        title=text.title, published=text.published,
+        requested_url,
+        final_url,
+        status,
+        headers,
+        html="",
+        markdown=text.markdown,
+        title=text.title,
+        published=text.published,
     )
 
 

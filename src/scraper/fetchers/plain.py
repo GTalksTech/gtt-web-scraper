@@ -3,7 +3,7 @@
 curl_cffi reproduces Chrome's TLS and HTTP/2 fingerprint and default headers, so the
 request presents as a normal browser (ADR 0001).
 
-A response that is a PDF (by content type, or by its header when mislabelled) is
+A response that is a PDF (by its %PDF- header; see pdf.is_pdf) is
 extracted locally instead of as HTML.
 """
 

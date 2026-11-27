@@ -5,13 +5,13 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from .fakefirecrawl import FakeFirecrawl, FirecrawlPage
-from .fakeweb import PAGES, FakeResponse, FakeWeb
+from .fakeweb import FakeResponse, FakeWeb, page
 from .test_scrape import scrape
 
 
 def pdf(name: str, content_type: str = "application/pdf") -> FakeResponse:
-    """A PDF fixture from tests/fixtures/pages (rebuilt by tests/fixtures/make_pdfs.py)."""
-    return FakeResponse((PAGES / name).read_bytes(), content_type=content_type)
+    """A PDF fixture (rebuilt by tests/fixtures/make_pdfs.py)."""
+    return page(name, content_type=content_type)
 
 
 def test_text_pdf_comes_back_as_markdown_extracted_locally(
@@ -45,6 +45,19 @@ def test_pdf_is_detected_by_its_content_when_the_server_mislabels_it(
     assert body["data"]["fetcher"] == "plain"
 
 
+def test_html_page_mislabelled_as_pdf_is_still_read_as_html(
+    client: TestClient, web: FakeWeb, firecrawl: FakeFirecrawl
+) -> None:
+    url = web.serve("/report.pdf", page("article.html", content_type="application/pdf"))
+
+    status, body = scrape(client, url)
+
+    assert status == 200
+    assert "Raspberry Pi 5 runs the" in body["data"]["markdown"]
+    assert body["data"]["fetcher"] == "plain"
+    assert firecrawl.scrapes == []
+
+
 def test_image_only_pdf_is_rejected_locally_and_escalates_to_the_paid_fetcher(
     client: TestClient, web: FakeWeb, firecrawl: FakeFirecrawl
 ) -> None:
@@ -67,7 +80,8 @@ def test_image_only_pdf_is_rejected_locally_and_escalates_to_the_paid_fetcher(
 def test_unreadable_pdf_is_rejected_and_escalates_instead_of_erroring(
     client: TestClient, web: FakeWeb, firecrawl: FakeFirecrawl
 ) -> None:
-    url = web.serve("/broken.pdf", FakeResponse(b"%PDF-1.7\nnot really a pdf", content_type="application/pdf"))
+    broken = FakeResponse(b"%PDF-1.7\nnot really a pdf", content_type="application/pdf")
+    url = web.serve("/broken.pdf", broken)
 
     status, body = scrape(client, url)
 
