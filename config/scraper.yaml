@@ -33,10 +33,23 @@ gate:
   challenge_poll_interval_s: 3.0
 
 cache:
-  # SQLite file holding the page cache (relative to the repo root). In a container this
+  # SQLite file holding the page cache and per-site memory (relative to the repo root). In a container this
   # directory needs a volume, or the cache is lost on every restart.
   path: data/scraper.db
   # A cached page younger than this is served without touching the site, unless the
   # Caller passes a smaller maxAge (0 forces a live fetch). Only accepted and suspect
   # results are cached; failures never are.
   default_max_age_s: 86400
+
+sites:
+  # A site is a URL's host name. The plain download waits at least this long between
+  # requests to the same site, so the home connection doesn't get flagged.
+  min_interval_s: 2
+  # When a site blocks the plain download (403, 429 or a challenge), the site goes on a
+  # cool-down this long: the plain download skips it and requests go straight to the
+  # Paid Fetcher.
+  cooldown_s: 1800
+  # A request to a site starts at the Fetcher that last succeeded there, for up to this
+  # long after it first did. Then one request climbs the Ladder from the bottom again,
+  # so a site that once needed the Paid Fetcher doesn't spend quota on it forever.
+  memory_ttl_s: 604800

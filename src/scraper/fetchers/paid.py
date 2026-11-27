@@ -22,6 +22,7 @@ from . import NOT_CONFIGURED, QUOTA_EXHAUSTED, FetchError, FetcherUnavailable
 class PaidFetcher:
     name = "paid"
     polls_challenges = False  # every fetch spends a credit
+    home_connection = False  # Firecrawl reaches the site, not the home connection
 
     def __init__(self, config: PaidConfig) -> None:
         self._config = config

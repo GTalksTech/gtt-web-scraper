@@ -1,7 +1,8 @@
 """Firecrawl-compatible HTTP API (ADR 0003): only the slice of scrape that Callers use.
 
 Responses keep Firecrawl's shape; our own fields (fetcher, verdict, confidence,
-publishedDate, attempts) are extras that Firecrawl-speaking Callers ignore.
+publishedDate, attempts) are extras that Firecrawl-speaking Callers ignore. Requests
+take one extra of our own: `fetcher`, to force a specific Fetcher.
 
 A failure (no Fetcher produced real content, including a real upstream 404) is an
 HTTP 502 with success: false, so a Caller never mistakes it for content.
@@ -19,7 +20,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from .config import Config, load_config
-from .router import Attempt, Failure, Router
+from .router import Attempt, Failure, Router, UnknownFetcher
 
 
 class ScrapeRequest(BaseModel):
@@ -32,6 +33,9 @@ class ScrapeRequest(BaseModel):
     # Firecrawl's maximum cache age, in milliseconds; 0 forces a live fetch. Omitted
     # means the configured default (24 hours).
     maxAge: int | None = Field(default=None, ge=0)  # noqa: N815 (Firecrawl's field name)
+    # Our extra: force a live fetch to use only this Fetcher ("plain" or "paid"),
+    # skipping the rest of the Ladder. A cached copy is still served.
+    fetcher: str | None = None
 
 
 def _attempt_json(attempt: Attempt) -> dict[str, Any]:
@@ -59,7 +63,13 @@ def create_app(
     @app.post("/v2/scrape")
     def scrape(request: ScrapeRequest) -> JSONResponse:
         max_age_s = None if request.maxAge is None else request.maxAge / 1000
-        outcome = router.get(request.url, max_age_s)
+        try:
+            outcome = router.get(request.url, max_age_s, request.fetcher)
+        except UnknownFetcher as exc:
+            return JSONResponse(
+                status_code=422,
+                content={"success": False, "code": "UNKNOWN_FETCHER", "error": str(exc)},
+            )
         if isinstance(outcome, Failure):
             tried = "; ".join(
                 f"{a.fetcher}: {a.verdict.decision} ({a.verdict.reason})" for a in outcome.attempts

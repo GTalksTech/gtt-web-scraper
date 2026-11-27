@@ -40,7 +40,8 @@ class GateConfig:
 
 @dataclass
 class CacheConfig:
-    # SQLite file holding the page cache; a relative path is from the repo root.
+    # SQLite file holding the page cache and per-site memory; a relative path is from
+    # the repo root.
     path: str = "data/scraper.db"
     # How old a cached page may be when the Caller doesn't pass a maximum age.
     default_max_age_s: float = 86400.0
@@ -51,12 +52,27 @@ class CacheConfig:
 
 
 @dataclass
+class SitesConfig:
+    # A site is a URL's host name. Fetchers that use the home connection (the plain
+    # download) wait at least this long between requests to the same site.
+    min_interval_s: float = 2.0
+    # After a site blocks the home connection (403, 429 or a challenge), Fetchers that
+    # use it skip the site this long, so requests go straight to the Paid Fetcher.
+    cooldown_s: float = 1800.0
+    # How long the Fetcher that last succeeded on a site is trusted to go first. After
+    # this, one request climbs the Ladder from the bottom again, so a site that needed
+    # the Paid Fetcher once doesn't spend quota on it forever.
+    memory_ttl_s: float = 604800.0
+
+
+@dataclass
 class Config:
     ladder: list[str] = field(default_factory=lambda: ["plain", "paid"])
     plain: PlainConfig = field(default_factory=PlainConfig)
     paid: PaidConfig = field(default_factory=PaidConfig)
     gate: GateConfig = field(default_factory=GateConfig)
     cache: CacheConfig = field(default_factory=CacheConfig)
+    sites: SitesConfig = field(default_factory=SitesConfig)
 
 
 def load_config(path: str | Path | None = None) -> Config:
@@ -70,4 +86,5 @@ def load_config(path: str | Path | None = None) -> Config:
         ),
         gate=GateConfig(**raw.get("gate", {})),
         cache=CacheConfig(**raw.get("cache", {})),
+        sites=SitesConfig(**raw.get("sites", {})),
     )

@@ -10,11 +10,11 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
-from collections.abc import Callable, Iterator
-from contextlib import closing, contextmanager
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 
 from .config import CacheConfig
+from .db import connect
 from .gate import Verdict
 from .page import FetchedPage
 
@@ -45,15 +45,8 @@ class PageCache:
         self._path = config.resolved_path()
         self._clock = clock
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        with self._connect() as db:
+        with connect(self._path) as db:
             db.execute(_SCHEMA)
-
-    @contextmanager
-    def _connect(self) -> Iterator[sqlite3.Connection]:
-        """A connection for one operation, committed and closed after it. One per
-        operation because requests run on FastAPI's thread pool."""
-        with closing(sqlite3.connect(self._path, timeout=10)) as db, db:
-            yield db
 
     def get(self, url: str, max_age_s: float | None = None) -> CachedPage | None:
         """The cached page for `url` if it is no older than `max_age_s` (default from
@@ -63,7 +56,7 @@ class PageCache:
         if max_age_s <= 0:
             return None
         try:
-            with self._connect() as db:
+            with connect(self._path) as db:
                 row = db.execute(
                     "SELECT fetched_at, fetcher, verdict, page FROM pages WHERE url = ?", (url,)
                 ).fetchone()
@@ -87,7 +80,7 @@ class PageCache:
         if verdict.decision == "rejected":
             raise ValueError("rejected results are never cached")
         try:
-            with self._connect() as db:
+            with connect(self._path) as db:
                 db.execute(
                     "INSERT OR REPLACE INTO pages (url, fetched_at, fetcher, verdict, page)"
                     " VALUES (?, ?, ?, ?, ?)",
