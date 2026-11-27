@@ -53,3 +53,20 @@ sites:
   # long after it first did. Then one request climbs the Ladder from the bottom again,
   # so a site that once needed the Paid Fetcher doesn't spend quota on it forever.
   memory_ttl_s: 604800
+
+adapters:
+  # Site Adapters, tried before the Ladder for the URLs they handle: YouTube channels,
+  # playlists and videos (public feeds), any Reddit page (its JSON view), and GitHub
+  # repos, issues, pull requests, releases and files (the REST API). Their results pass
+  # the Content Gate; a failed or rejected one falls back to the Ladder. A forced
+  # Fetcher skips them. Remove a name to send that site's URLs straight to the Ladder.
+  enabled:
+    - youtube
+    - reddit
+    - github
+  timeout_s: 20
+  # Where each adapter sends its requests (tests point these at fake endpoints). The
+  # GitHub token comes from GITHUB_API_TOKEN in .env, never from this file.
+  youtube_url: https://www.youtube.com
+  reddit_url: https://www.reddit.com
+  github_api_url: https://api.github.com

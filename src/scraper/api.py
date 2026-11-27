@@ -1,7 +1,7 @@
 """Firecrawl-compatible HTTP API (ADR 0003): only the slice of scrape that Callers use.
 
-Responses keep Firecrawl's shape; our own fields (fetcher, verdict, confidence,
-publishedDate, attempts) are extras that Firecrawl-speaking Callers ignore. Requests
+Responses keep Firecrawl's shape; our own fields (fetcher, siteAdapter, verdict,
+confidence, publishedDate, attempts) are extras that Firecrawl-speaking Callers ignore. Requests
 take one extra of our own: `fetcher`, to force a specific Fetcher.
 
 A failure (no Fetcher produced real content, including a real upstream 404) is an
@@ -34,7 +34,7 @@ class ScrapeRequest(BaseModel):
     # means the configured default (24 hours).
     maxAge: int | None = Field(default=None, ge=0)  # noqa: N815 (Firecrawl's field name)
     # Our extra: force a live fetch to use only this Fetcher ("plain" or "paid"),
-    # skipping the rest of the Ladder. A cached copy is still served.
+    # skipping the rest of the Ladder and any Site Adapter. A cached copy is still served.
     fetcher: str | None = None
 
 
@@ -109,6 +109,8 @@ def create_app(
                         **cache,
                     },
                     "fetcher": outcome.fetcher,
+                    # The Site Adapter that produced the content, or null for the Ladder.
+                    "siteAdapter": outcome.site_adapter,
                     "verdict": outcome.verdict.decision,
                     "confidence": "accepted" if accepted else "possibly_partial",
                     "publishedDate": page.published,
