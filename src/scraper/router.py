@@ -19,6 +19,9 @@ class Attempt:
     fetcher: str
     verdict: Verdict
     status_code: int | None
+    # Set when the Fetcher couldn't be used at all, e.g. "Paid Fetcher unavailable:
+    # quota exhausted".
+    unavailable: str | None = None
 
 
 @dataclass(frozen=True)
@@ -32,6 +35,11 @@ class Success:
 @dataclass(frozen=True)
 class Failure:
     attempts: list[Attempt]
+
+    @property
+    def unavailable(self) -> list[str]:
+        """Fetchers the request needed but couldn't use: why the request failed."""
+        return [a.unavailable for a in self.attempts if a.unavailable]
 
 
 def _build_ladder(config: Config) -> list[Fetcher]:
@@ -64,7 +72,8 @@ class Router:
         try:
             page = fetcher.fetch(url)
         except FetcherUnavailable as exc:
-            return Attempt(fetcher.name, Verdict("rejected", exc.reason, str(exc)), None), None
+            verdict = Verdict("rejected", exc.reason, str(exc))
+            return Attempt(fetcher.name, verdict, None, unavailable=str(exc)), None
         except FetchError as exc:
             return Attempt(fetcher.name, Verdict("rejected", FETCH_ERROR, str(exc)), None), None
         verdict = judge(page, gate)

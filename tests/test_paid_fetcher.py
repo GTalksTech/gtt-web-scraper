@@ -13,8 +13,7 @@ from scraper.config import Config
 
 from .fakefirecrawl import FakeFirecrawl, firecrawl_page
 from .fakeweb import FakeWeb, page
-
-CF_HEADERS = {"cf-mitigated": "challenge", "server": "cloudflare"}
+from .test_scrape import CF_HEADERS, scrape
 
 # Firecrawl's own markdown for tests/fixtures/pages/article.html.
 ARTICLE_MARKDOWN = """# How Raspberry Pi 5 Handles Sustained Workloads
@@ -59,11 +58,6 @@ cookie preferences at any time by selecting Privacy settings at the bottom of an
 
 Reject all | Manage cookie preferences | Accept all
 """
-
-
-def scrape(client: TestClient, url: str) -> tuple[int, dict]:  # type: ignore[type-arg]
-    response = client.post("/v1/scrape", json={"url": url, "formats": ["markdown"]})
-    return response.status_code, response.json()
 
 
 def tried(body: dict) -> list[tuple[str, str, str]]:  # type: ignore[type-arg]

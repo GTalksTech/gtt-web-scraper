@@ -15,9 +15,8 @@ from curl_cffi import requests as curl
 from curl_cffi.requests.exceptions import RequestException
 
 from ..config import PaidConfig
-from ..gate import NOT_CONFIGURED, QUOTA_EXHAUSTED
 from ..page import FetchedPage, page_with_markdown
-from . import FetchError, FetcherUnavailable
+from . import NOT_CONFIGURED, QUOTA_EXHAUSTED, FetchError, FetcherUnavailable
 
 
 class PaidFetcher:

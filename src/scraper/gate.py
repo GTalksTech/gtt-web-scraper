@@ -28,12 +28,7 @@ SOFT_404 = "soft_404"
 BLOCKED = "blocked"
 EMPTY_SHELL = "empty_shell"
 TOO_SHORT = "too_short"
-# Not the Gate's own findings: the Fetcher produced nothing to judge. FETCH_ERROR is
-# no response at all; the UNAVAILABLE reasons mean the Fetcher can't be used right now.
 FETCH_ERROR = "fetch_error"
-QUOTA_EXHAUSTED = "quota_exhausted"
-NOT_CONFIGURED = "not_configured"
-UNAVAILABLE = (QUOTA_EXHAUSTED, NOT_CONFIGURED)
 
 
 @dataclass(frozen=True)

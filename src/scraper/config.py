@@ -39,7 +39,7 @@ class GateConfig:
 
 @dataclass
 class Config:
-    ladder: list[str] = field(default_factory=lambda: ["plain"])
+    ladder: list[str] = field(default_factory=lambda: ["plain", "paid"])
     plain: PlainConfig = field(default_factory=PlainConfig)
     paid: PaidConfig = field(default_factory=PaidConfig)
     gate: GateConfig = field(default_factory=GateConfig)
@@ -49,7 +49,7 @@ def load_config(path: str | Path | None = None) -> Config:
     path = Path(path or os.environ.get("SCRAPER_CONFIG") or DEFAULT_PATH)
     raw: dict[str, Any] = yaml.safe_load(path.read_text()) or {}
     return Config(
-        ladder=list(raw.get("ladder", ["plain"])),
+        ladder=list(raw.get("ladder", Config().ladder)),
         plain=PlainConfig(**raw.get("plain", {})),
         paid=PaidConfig(
             **raw.get("paid", {}), api_key=os.environ.get("FIRECRAWL_API_KEY") or None

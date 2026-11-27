@@ -8,12 +8,18 @@ from ..page import FetchedPage
 
 
 class FetchError(Exception):
-    """The Fetcher got no response at all (DNS, connection, timeout)."""
+    """The Fetcher produced no page to judge (DNS, connection, timeout, a service error)."""
+
+
+# Why a Fetcher is unavailable; shown as the reason on its attempt.
+QUOTA_EXHAUSTED = "quota_exhausted"
+NOT_CONFIGURED = "not_configured"
 
 
 class FetcherUnavailable(FetchError):
     """The Fetcher can't be used at all right now (e.g. the Paid Fetcher's quota is
-    exhausted). `reason` names why, for the Verdict; the message is for the Caller."""
+    exhausted), so it wasn't tried. `reason` is one of the reasons above; the message
+    is for the Caller."""
 
     def __init__(self, reason: str, message: str) -> None:
         super().__init__(message)
