@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -95,11 +96,50 @@ class SearchConfig:
     exa_url: str = "https://api.exa.ai"
     tavily_url: str = "https://api.tavily.com"
     duckduckgo_url: str = "https://html.duckduckgo.com"
+    # The Source List's file, relative to this config file's directory.
+    source_list: str = "source-list.yaml"
     # From the environment (TINYFISH_API_KEY, EXA_API_KEY, TAVILY_API_KEY), never from
     # the YAML file. A Provider without its key is skipped. DuckDuckGo needs none.
     tinyfish_api_key: str | None = None
     exa_api_key: str | None = None
     tavily_api_key: str | None = None
+
+
+# A domain name: dot-separated labels of letters, digits and hyphens.
+_DOMAIN = re.compile(r"^(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))+$")
+
+
+def _domain(entry: object) -> str:
+    """A Source List entry as a bare lower-case domain ("www.GitHub.com." → "github.com")."""
+    domain = str(entry or "").strip().lower().rstrip(".")
+    domain = domain.removeprefix("www.")
+    if not _DOMAIN.match(domain):
+        raise ValueError(
+            f"Source List entry {entry!r} is not a domain name (write e.g. github.com, "
+            "with no scheme or path)"
+        )
+    return domain
+
+
+@dataclass
+class SourceList:
+    """The domains search trusts (boosted) and blocks (dropped), with their subdomains.
+    It shapes which sources Callers see; it does not judge whether a claim is true."""
+
+    trusted: list[str] = field(default_factory=list)
+    blocked: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        self.trusted = list(dict.fromkeys(_domain(d) for d in self.trusted))
+        self.blocked = list(dict.fromkeys(_domain(d) for d in self.blocked))
+        both = sorted(set(self.trusted) & set(self.blocked))
+        if both:
+            raise ValueError(f"Source List has domains both trusted and blocked: {', '.join(both)}")
+
+
+def load_source_list(path: Path) -> SourceList:
+    raw: dict[str, Any] = yaml.safe_load(path.read_text()) or {}
+    return SourceList(trusted=list(raw.get("trusted") or []), blocked=list(raw.get("blocked") or []))
 
 
 @dataclass
@@ -112,11 +152,18 @@ class Config:
     sites: SitesConfig = field(default_factory=SitesConfig)
     adapters: AdaptersConfig = field(default_factory=AdaptersConfig)
     search: SearchConfig = field(default_factory=SearchConfig)
+    source_list: SourceList = field(default_factory=SourceList)
 
 
 def load_config(path: str | Path | None = None) -> Config:
     path = Path(path or os.environ.get("SCRAPER_CONFIG") or DEFAULT_PATH)
     raw: dict[str, Any] = yaml.safe_load(path.read_text()) or {}
+    search = SearchConfig(
+        **raw.get("search", {}),
+        tinyfish_api_key=os.environ.get("TINYFISH_API_KEY") or None,
+        exa_api_key=os.environ.get("EXA_API_KEY") or None,
+        tavily_api_key=os.environ.get("TAVILY_API_KEY") or None,
+    )
     return Config(
         ladder=list(raw.get("ladder", Config().ladder)),
         plain=PlainConfig(**raw.get("plain", {})),
@@ -129,10 +176,6 @@ def load_config(path: str | Path | None = None) -> Config:
         adapters=AdaptersConfig(
             **raw.get("adapters", {}), github_token=os.environ.get("GITHUB_API_TOKEN") or None
         ),
-        search=SearchConfig(
-            **raw.get("search", {}),
-            tinyfish_api_key=os.environ.get("TINYFISH_API_KEY") or None,
-            exa_api_key=os.environ.get("EXA_API_KEY") or None,
-            tavily_api_key=os.environ.get("TAVILY_API_KEY") or None,
-        ),
+        search=search,
+        source_list=load_source_list(path.parent / search.source_list),
     )

@@ -54,15 +54,24 @@ def failure_error(url: str, failure: Failure) -> str:
     return error
 
 
+# What Callers see as the Published date when the Provider and the page give none.
+PUBLISHED_UNKNOWN = "unknown"
+
+
+def published_json(published: str | None) -> str:
+    """A Published date (YYYY-MM-DD) as every interface shows it, or "unknown"."""
+    return published or PUBLISHED_UNKNOWN
+
+
 def search_result_json(result: SearchResult) -> dict[str, Any]:
     """One search result as both interfaces show it. The API also writes the snippet
-    as Firecrawl's `description`. (The Published date joins it with ticket #13, once
-    it is normalised.)"""
+    as Firecrawl's `description`."""
     return {
         "title": result.title,
         "url": result.url,
         "snippet": result.snippet,
         "provider": result.provider,
+        "publishedDate": published_json(result.published),
     }
 
 

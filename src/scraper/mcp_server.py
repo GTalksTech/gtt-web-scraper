@@ -29,6 +29,7 @@ from .responses import (
     failure_code,
     failure_error,
     provider_attempt_json,
+    published_json,
     search_failure_json,
     search_result_json,
 )
@@ -105,8 +106,8 @@ def add_fetch_tool(server: FastMCP, router: Router) -> None:
             ),
         ] = None,
     ) -> CallToolResult:
-        """Fetch a web page or PDF as clean markdown, with its title, the Fetcher that got
-        it, the Content Gate's Verdict and the confidence (accepted, or possibly_partial
+        """Fetch a web page or PDF as clean markdown, with its title, Published date
+        (YYYY-MM-DD or unknown), the Fetcher that got it, the Content Gate's Verdict and the confidence (accepted, or possibly_partial
         when the content may be incomplete). Fails explicitly, listing every Fetcher
         tried, rather than returning a block page."""
         try:
@@ -127,8 +128,12 @@ def add_search_tool(server: FastMCP, searcher: Searcher) -> None:
     @server.tool(
         title="Search the web",
         description=(
-            "Search the web: a ranked list of results, each with title, URL, snippet and "
-            "the Search Provider that found it. Providers are tried in order "
+            "Search the web: a ranked list of results, each with title, URL, snippet, "
+            "Published date (YYYY-MM-DD or unknown) and the Search Provider that found it. "
+            "Results from trusted primary sources (official docs, vendor blogs, standards "
+            "bodies, reputable outlets) come first and known content farms are dropped; "
+            "that steers toward sources, it does not vouch for any claim. Providers are "
+            "tried in order "
             f"({providers}); a failing one passes the query to the next. Repeated "
             f"searches are served from a {cache_hours:g}-hour cache. Fails explicitly, "
             "naming each Provider's error, rather than returning an empty list."
@@ -161,6 +166,7 @@ def _search_success(outcome: SearchSuccess) -> CallToolResult:
         lines.append(f"Cached at: {cached_at}")
     for i, r in enumerate(outcome.results, 1):
         lines += ["", f"{i}. {r.title}", f"   {r.url}"]
+        lines.append(f"   Published: {published_json(r.published)}")
         if r.snippet:
             lines.append(f"   {r.snippet}")
     text = "\n".join(lines)
@@ -179,7 +185,7 @@ def _fetch_success(url: str, outcome: Success) -> CallToolResult:
         "fetcher": outcome.fetcher,
         "verdict": outcome.verdict.decision,
         "confidence": confidence(outcome.verdict),
-        "publishedDate": page.published,
+        "publishedDate": published_json(page.published),
         "cachedAt": cached_at,
         "attempts": [attempt_json(a) for a in outcome.attempts],
     }
@@ -189,7 +195,7 @@ def _fetch_success(url: str, outcome: Success) -> CallToolResult:
         f"Fetcher: {outcome.fetcher}",
         f"Verdict: {outcome.verdict.decision}",
         f"Confidence: {data['confidence']}",
-        f"Published: {page.published or 'unknown'}",
+        f"Published: {data['publishedDate']}",
     ]
     if cached_at is not None:
         header.append(f"Cached at: {cached_at}")

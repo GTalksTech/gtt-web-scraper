@@ -54,12 +54,14 @@ def test_search_returns_title_url_snippet_and_provider(
             "url": "https://example.org/review",
             "snippet": "A long review.",
             "provider": "exa",
+            "publishedDate": "2026-10-14",
         },
         {
             "title": "Pi 5 thermals",
             "url": "https://example.org/thermals",
             "snippet": "Heat under load.",
             "provider": "exa",
+            "publishedDate": "unknown",
         },
     ]
     assert got["provider"] == "exa"

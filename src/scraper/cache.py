@@ -75,6 +75,24 @@ class PageCache:
             fetched_at=fetched_at,
         )
 
+    def published_dates(self, urls: list[str]) -> dict[str, str]:
+        """The Published date of each of `urls` that is cached with one, however old
+        the copy (a page's publication date doesn't go stale)."""
+        if not urls:
+            return {}
+        marks = ", ".join("?" * len(urls))
+        try:
+            with connect(self._path) as db:
+                rows = db.execute(
+                    f"SELECT url, json_extract(page, '$.published') FROM pages"  # noqa: S608
+                    f" WHERE url IN ({marks})",
+                    urls,
+                ).fetchall()
+        except sqlite3.Error:
+            log.exception("page cache unreadable; no Published dates from it")
+            return {}
+        return {url: published for url, published in rows if isinstance(published, str)}
+
     def put(self, url: str, page: FetchedPage, fetcher: str, verdict: Verdict) -> None:
         """Store a result that passed the Content Gate."""
         if verdict.decision == "rejected":
