@@ -10,6 +10,7 @@ from scraper.api import create_app
 from scraper.config import Config, load_config
 
 from .fakefirecrawl import API_KEY, FakeFirecrawl
+from .fakesearch import KEYS, PROVIDERS, FakeSearchProviders
 from .fakeweb import FakeWeb
 
 
@@ -30,7 +31,17 @@ def firecrawl() -> Iterator[FakeFirecrawl]:
 
 
 @pytest.fixture
-def config(firecrawl: FakeFirecrawl, tmp_path: Path) -> Config:
+def providers() -> Iterator[FakeSearchProviders]:
+    fake = FakeSearchProviders()
+    fake.start()
+    yield fake
+    fake.stop()
+
+
+@pytest.fixture
+def config(
+    firecrawl: FakeFirecrawl, providers: FakeSearchProviders, tmp_path: Path
+) -> Config:
     config = load_config()
     # Each test gets its own empty page cache.
     config.cache.path = str(tmp_path / "scraper.db")
@@ -42,6 +53,13 @@ def config(firecrawl: FakeFirecrawl, tmp_path: Path) -> Config:
     # The Paid Fetcher talks to the fake Firecrawl, never the real one.
     config.paid.base_url = firecrawl.base_url
     config.paid.api_key = API_KEY
+    # Search goes to the fake Search Providers, never the real ones.
+    config.search.providers = list(PROVIDERS)
+    for name in PROVIDERS:
+        setattr(config.search, f"{name}_url", providers.base_url(name))
+    config.search.tinyfish_api_key = KEYS["tinyfish"]
+    config.search.exa_api_key = KEYS["exa"]
+    config.search.tavily_api_key = KEYS["tavily"]
     return config
 
 

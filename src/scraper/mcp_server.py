@@ -1,8 +1,9 @@
 """MCP tools for Claude Code (ADR 0003), served over Streamable HTTP at /mcp on the same
 port as the Firecrawl-compatible API.
 
-Each tool is added by its own `add_*_tool` function, so a new one (search, ticket #12)
-is another function called from `create_mcp_server`. The server is stateless and
+Each tool is added by its own `add_*_tool` function called from `create_mcp_server`:
+`fetch` (a page, through the Router) and `search` (a query, through the Searcher).
+The server is stateless and
 answers in plain JSON: no session survives between calls, so a redeploy on pi5 never
 strands a connected Claude Code session.
 """
@@ -27,18 +28,25 @@ from .responses import (
     confidence,
     failure_code,
     failure_error,
+    SEARCH_FAILED,
     iso_utc,
+    provider_attempt_json,
+    search_failure_error,
+    search_result_json,
 )
 from .router import Failure, Router, Success, UnknownFetcher
+from .search import Searcher, SearchFailure, SearchSuccess
 
 INSTRUCTIONS = (
     "gtt-web-scraper turns a URL into clean markdown, trying free Fetchers before the "
     "paid one. It never returns a block page, challenge, cookie wall or empty shell as "
-    "content: when no Fetcher gets real content, the tool fails and says why."
+    "content: when no Fetcher gets real content, the tool fails and says why. It also "
+    "searches the web through free Search Providers; when every Provider fails, the "
+    "search tool fails and says why instead of returning no results."
 )
 
 
-def create_mcp_server(router: Router) -> FastMCP:
+def create_mcp_server(router: Router, searcher: Searcher) -> FastMCP:
     server = FastMCP(
         "gtt-web-scraper",
         instructions=INSTRUCTIONS,
@@ -51,6 +59,7 @@ def create_mcp_server(router: Router) -> FastMCP:
         transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
     )
     add_fetch_tool(server, router)
+    add_search_tool(server, searcher)
     return server
 
 
@@ -111,6 +120,61 @@ def add_fetch_tool(server: FastMCP, router: Router) -> None:
         if isinstance(outcome, Failure):
             return _fetch_failure(url, outcome)
         return _fetch_success(url, outcome)
+
+
+def add_search_tool(server: FastMCP, searcher: Searcher) -> None:
+    providers = ", ".join(searcher.providers)
+
+    @server.tool(
+        title="Search the web",
+        description=(
+            "Search the web: a ranked list of results, each with title, URL, snippet and "
+            "the Search Provider that found it. Providers are tried in order "
+            f"({providers}); a failing one passes the query to the next. Repeated "
+            "searches are served from a 24-hour cache. Fails explicitly, naming each "
+            "Provider's error, rather than returning an empty list."
+        ),
+        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+    )
+    async def search(
+        query: Annotated[str, Field(min_length=1, description="What to search for.")],
+        limit: Annotated[
+            int, Field(ge=1, le=100, description="Most results to return (default 10).")
+        ] = 10,
+    ) -> CallToolResult:
+        outcome = await anyio.to_thread.run_sync(lambda: searcher.search(query, limit))
+        if isinstance(outcome, SearchFailure):
+            error = search_failure_error(query, outcome)
+            return _error(
+                error,
+                {
+                    "code": SEARCH_FAILED,
+                    "error": error,
+                    "attempts": [provider_attempt_json(a) for a in outcome.attempts],
+                },
+            )
+        return _search_success(outcome)
+
+
+def _search_success(outcome: SearchSuccess) -> CallToolResult:
+    cached_at = None if outcome.cached_at is None else iso_utc(outcome.cached_at)
+    data: dict[str, Any] = {
+        "results": [search_result_json(r) for r in outcome.results],
+        "provider": outcome.provider,
+        "cachedAt": cached_at,
+        "attempts": [provider_attempt_json(a) for a in outcome.attempts],
+    }
+    lines = [f"Provider: {outcome.provider}"]
+    if cached_at is not None:
+        lines.append(f"Cached at: {cached_at}")
+    for i, r in enumerate(outcome.results, 1):
+        lines += ["", f"{i}. {r.title}", f"   {r.url}"]
+        if r.published:
+            lines.append(f"   Published: {r.published}")
+        if r.snippet:
+            lines.append(f"   {r.snippet}")
+    text = "\n".join(lines)
+    return CallToolResult(content=[TextContent(type="text", text=text)], structuredContent=data)
 
 
 def _fetch_success(url: str, outcome: Success) -> CallToolResult:

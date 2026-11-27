@@ -45,6 +45,8 @@ class FakeFirecrawl:
         self._pages: dict[str, FirecrawlPage] = {}
         self.quota_exhausted = False
         self.scrapes: list[SeenScrape] = []
+        # The path of every request Firecrawl received, whatever the endpoint.
+        self.paths: list[str] = []
         self._lock = threading.Lock()
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
         self._thread = threading.Thread(
@@ -97,7 +99,14 @@ class FakeFirecrawl:
         fake = self
 
         class Handler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802 (stdlib name)
+                fake.paths.append(self.path)
+                self.send_response(404)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
             def do_POST(self) -> None:  # noqa: N802 (stdlib name)
+                fake.paths.append(self.path)
                 length = int(self.headers.get("Content-Length", "0"))
                 body = json.loads(self.rfile.read(length) or b"{}")
                 authorization = self.headers.get("Authorization")
