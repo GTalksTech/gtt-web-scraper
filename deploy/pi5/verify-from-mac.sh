@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
 # Checks the scraper on pi5 from this Mac, over Tailscale: it answers on the
-# tailnet, a real page comes back as markdown, and (given pi5's home-LAN
+# tailnet, a real page comes back as markdown, the MCP endpoint Claude Code
+# connects to offers its fetch tool, and (given pi5's home-LAN
 # address) it does NOT answer on the LAN.
 #
 #   deploy/pi5/verify-from-mac.sh [LAN_IP]
@@ -35,6 +36,16 @@ if jq -e '.success == true and (.data.markdown | length) > 1000' <<< "$body" > /
   jq -r '.data.markdown' <<< "$body" | head -n 5 | sed 's/^/          /'
 else
   bad "scrape of $URL did not return markdown: $(head -c 400 <<< "$body")"
+fi
+
+# The MCP endpoint is stateless, so one JSON-RPC call lists its tools.
+tools=$(curl -sS --max-time 10 "http://$HOST:$PORT/mcp" \
+  -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' \
+  -d '{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}' || true)
+if jq -e '[.result.tools[].name] | index("fetch")' <<< "$tools" > /dev/null 2>&1; then
+  ok "MCP at http://$HOST:$PORT/mcp offers: $(jq -r '[.result.tools[].name] | join(", ")' <<< "$tools")"
+else
+  bad "MCP at http://$HOST:$PORT/mcp did not list a fetch tool: $(head -c 400 <<< "$tools")"
 fi
 
 if [[ -n "$LAN_IP" ]]; then

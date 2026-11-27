@@ -58,7 +58,32 @@ Do these in order. Steps 1 and 2 need GitHub; the rest happen on this Mac and pi
    deploy/pi5/verify-from-mac.sh 192.168.x.y
    ```
 
-   It should print the health answer, the start of the markdown for Python's sqlite3 docs, and "no answer on the LAN".
+   It should print the health answer, the start of the markdown for Python's sqlite3 docs, the MCP `fetch` tool, and "no answer on the LAN".
+
+9. **Add the MCP server to Claude Code** on the MacBook and on GM-Desktop: see [Using it from Claude Code](#using-it-from-claude-code-mcp).
+
+## Using it from Claude Code (MCP)
+
+The service offers an MCP `fetch` tool at `http://pi5:3002/mcp`, on the same port as the scrape API, so it's tailnet only too. It takes a URL, an optional `max_age_seconds` (0 forces a live fetch) and an optional `fetcher` to force (`plain` or `paid`). It returns the markdown with the title, the Fetcher used, the Verdict and the confidence, or an explicit failure listing every Fetcher tried.
+
+Add it once on each machine, with Tailscale connected. The command is the same on the MacBook (Terminal) and on GM-Desktop (PowerShell):
+
+```sh
+claude mcp add --transport http --scope user gtt-scraper http://pi5:3002/mcp
+```
+
+`--scope user` makes it available in every project on that machine. Then check with `claude mcp list`: it should show `gtt-scraper` as connected. In a session, `/mcp` lists it with its `fetch` tool, which Claude sees as `mcp__gtt-scraper__fetch`.
+
+- **`pi5` doesn't resolve** (MagicDNS off on that machine): use the Pi's tailnet IP. Get it with `tailscale ip -4 pi5`, then `claude mcp remove gtt-scraper --scope user` and add it again with `http://100.x.y.z:3002/mcp`.
+- **Failed to connect:** check the service answers from that machine with `curl http://pi5:3002/health` (on Windows, `curl.exe`). If it doesn't, Tailscale isn't connected there or the service is down; see Troubleshooting. If it does, check the MCP endpoint itself (`deploy/pi5/verify-from-mac.sh` does this on the Mac). On GM-Desktop, in PowerShell:
+
+  ```powershell
+  (Invoke-RestMethod -Method Post -Uri http://pi5:3002/mcp -ContentType 'application/json' -Headers @{Accept = 'application/json, text/event-stream'} -Body '{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}').result.tools.name
+  ```
+
+  It should print `fetch`.
+- **Long pages cut short:** Claude Code caps an MCP tool's output (25,000 tokens by default). To allow more, set `MAX_MCP_OUTPUT_TOKENS` (for example `50000`) in the environment Claude Code starts from.
+- A deploy on the Pi doesn't break connected sessions: the MCP endpoint keeps no sessions between calls.
 
 ## Day to day
 
