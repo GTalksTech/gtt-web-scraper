@@ -66,6 +66,21 @@ class SitesConfig:
 
 
 @dataclass
+class AdaptersConfig:
+    # Site Adapters in use; a URL one of them handles skips the Ladder (unless its
+    # result is rejected). Remove a name to send that site's URLs to the Ladder.
+    enabled: list[str] = field(default_factory=lambda: ["youtube", "reddit", "github"])
+    timeout_s: float = 20.0
+    # Where each adapter sends its requests. Tests point these at fake endpoints.
+    youtube_url: str = "https://www.youtube.com"
+    reddit_url: str = "https://www.reddit.com"
+    github_api_url: str = "https://api.github.com"
+    # From the environment (GITHUB_API_TOKEN), never from the YAML file. Without it
+    # the GitHub adapter calls the API unauthenticated (60 requests an hour).
+    github_token: str | None = None
+
+
+@dataclass
 class Config:
     ladder: list[str] = field(default_factory=lambda: ["plain", "paid"])
     plain: PlainConfig = field(default_factory=PlainConfig)
@@ -73,6 +88,7 @@ class Config:
     gate: GateConfig = field(default_factory=GateConfig)
     cache: CacheConfig = field(default_factory=CacheConfig)
     sites: SitesConfig = field(default_factory=SitesConfig)
+    adapters: AdaptersConfig = field(default_factory=AdaptersConfig)
 
 
 def load_config(path: str | Path | None = None) -> Config:
@@ -87,4 +103,7 @@ def load_config(path: str | Path | None = None) -> Config:
         gate=GateConfig(**raw.get("gate", {})),
         cache=CacheConfig(**raw.get("cache", {})),
         sites=SitesConfig(**raw.get("sites", {})),
+        adapters=AdaptersConfig(
+            **raw.get("adapters", {}), github_token=os.environ.get("GITHUB_API_TOKEN") or None
+        ),
     )

@@ -1,9 +1,19 @@
-"""The Router owns a request end to end: climb the Ladder, judge each result, and
-return either content or an explicit failure listing every Fetcher tried.
+"""The Router owns a request end to end: serve the cache, try the Site Adapter for the
+URL if there is one, climb the Ladder, judge each result, and return either content
+or an explicit failure listing everything tried.
 
 Per site, it starts at the Fetcher that last succeeded there, spaces requests over
 the home connection, and puts a site that blocks the home connection on a cool-down
 during which only Fetchers that don't use it (the Paid Fetcher) are tried.
+
+A Site Adapter goes before the Ladder. Its result passes the Content Gate like any
+Fetcher's; if the adapter fails or its result is rejected, the request climbs the
+Ladder as if there were no adapter. An adapter's result is cached like a Fetcher's.
+An adapter that reaches its site over the home connection (YouTube, Reddit) is spaced
+and respects cool-downs like the plain download, and a 403 or 429 from it starts one;
+the GitHub adapter calls GitHub's API host, not the page's. Adapters are not recorded
+in per-site memory, which orders the Ladder. A forced Fetcher skips them: the Caller
+asked for that Fetcher and nothing else.
 """
 
 from __future__ import annotations
@@ -12,6 +22,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 
+from .adapters import ADAPTER_NAMES, ApiError, SiteAdapter, build_adapters
 from .cache import PageCache
 from .config import Config
 from .fetchers import COOLING_DOWN, Fetcher, FetchError, FetcherUnavailable
@@ -24,7 +35,7 @@ from .sites import SiteMemory, Spacer, site_of
 
 @dataclass(frozen=True)
 class Attempt:
-    fetcher: str
+    fetcher: str  # a Fetcher's name, or a Site Adapter's
     verdict: Verdict
     status_code: int | None
     # Set when the Fetcher couldn't be used at all, e.g. "Paid Fetcher unavailable:
@@ -41,6 +52,9 @@ class Success:
     attempts: list[Attempt]
     # When the page was fetched, if it was served from the cache; None for a live fetch.
     cached_at: float | None = None
+    # The Site Adapter that produced the content (then also `fetcher`), or None when a
+    # Fetcher on the Ladder did.
+    site_adapter: str | None = None
 
 
 @dataclass(frozen=True)
@@ -77,6 +91,7 @@ class Router:
         self._cache = PageCache(config.cache, clock)
         self._sites = SiteMemory(config.cache.resolved_path(), config.sites, clock)
         self._spacer = Spacer(config.sites.min_interval_s)
+        self._adapters = build_adapters(config.adapters)
 
     @property
     def fetchers(self) -> list[str]:
@@ -88,7 +103,8 @@ class Router:
     ) -> Success | Failure:
         """Content for `url`: from the cache if a copy is no older than `max_age_s`
         (default from config; 0 forces a live fetch), else from the Ladder. `forced`
-        names the only Fetcher a live fetch may use (a cache hit is still served).
+        names the only Fetcher a live fetch may use, skipping any Site Adapter (a
+        cache hit is still served).
         Raises UnknownFetcher if `forced` isn't on the Ladder."""
         if forced is not None and forced not in self.fetchers:
             raise UnknownFetcher(
@@ -102,14 +118,28 @@ class Router:
                 verdict=cached.verdict,
                 attempts=[],
                 cached_at=cached.fetched_at,
+                site_adapter=cached.fetcher if cached.fetcher in ADAPTER_NAMES else None,
             )
         site = site_of(url)
         state = self._sites.lookup(site)
         cooldown = state.cooldown
         attempts: list[Attempt] = []
+        adapter = None if forced is not None else self._adapter_for(url)
+        if adapter is not None and adapter.home_connection and cooldown is not None:
+            attempts.append(_skipped(adapter.name, cooldown.explain(adapter.name, site)))
+        elif adapter is not None:
+            attempt, page = self._try_adapter(adapter, url, site)
+            attempts.append(attempt)
+            if adapter.home_connection and _is_block(attempt):
+                cooldown = self._sites.blocked(site, attempt.verdict.reason)
+            if page is not None and attempt.verdict.decision != "rejected":
+                self._cache.put(url, page, adapter.name, attempt.verdict)
+                return Success(
+                    page, adapter.name, attempt.verdict, attempts, site_adapter=adapter.name
+                )
         for fetcher in self._plan(state.remembered, forced):
             if fetcher.home_connection and cooldown is not None:
-                attempts.append(_skipped(fetcher, cooldown.explain(fetcher.name, site)))
+                attempts.append(_skipped(fetcher.name, cooldown.explain(fetcher.name, site)))
                 continue
             attempt, page = self._try(fetcher, url, site)
             attempts.append(attempt)
@@ -120,6 +150,25 @@ class Router:
                 self._cache.put(url, page, fetcher.name, attempt.verdict)
                 return Success(page, fetcher.name, attempt.verdict, attempts)
         return Failure(attempts)
+
+    def _adapter_for(self, url: str) -> SiteAdapter | None:
+        return next((a for a in self._adapters if a.handles(url)), None)
+
+    def _try_adapter(
+        self, adapter: SiteAdapter, url: str, site: str
+    ) -> tuple[Attempt, FetchedPage | None]:
+        """A Site Adapter's result, judged by the Content Gate. A refusal from the
+        site's API keeps its status code, so a 403 or 429 can start a cool-down."""
+        if adapter.home_connection:
+            self._spacer.wait_turn(site)
+        try:
+            page = adapter.fetch(url)
+        except ApiError as exc:
+            verdict = Verdict("rejected", f"http_{exc.status}", str(exc))
+            return Attempt(adapter.name, verdict, exc.status), None
+        except FetchError as exc:
+            return Attempt(adapter.name, Verdict("rejected", FETCH_ERROR, str(exc)), None), None
+        return Attempt(adapter.name, judge(page, self._config.gate), page.status), page
 
     def _plan(self, remembered: str | None, forced: str | None) -> list[Fetcher]:
         """The Fetchers to try, in order: only the forced one, or the Ladder starting
@@ -173,6 +222,6 @@ def _is_block(attempt: Attempt) -> bool:
     return attempt.status_code in _BLOCK_STATUSES or attempt.verdict.reason in _BLOCK_REASONS
 
 
-def _skipped(fetcher: Fetcher, why: str) -> Attempt:
-    """A Fetcher not tried because its site is on a cool-down."""
-    return Attempt(fetcher.name, Verdict("rejected", COOLING_DOWN, why), None, unavailable=why)
+def _skipped(name: str, why: str) -> Attempt:
+    """A Fetcher or Site Adapter not tried because its site is on a cool-down."""
+    return Attempt(name, Verdict("rejected", COOLING_DOWN, why), None, unavailable=why)
