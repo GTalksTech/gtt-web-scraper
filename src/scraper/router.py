@@ -17,7 +17,8 @@ asked for that Fetcher and nothing else. A Site Adapter can be forced too (the C
 Set does, to check each one); then nothing else is tried, not even the Ladder.
 
 Every attempt a Fetcher on the Ladder or a Site Adapter makes counts towards its
-rolling success rate (health/rates.py); one skipped for a cool-down doesn't.
+rolling success rate (health/rates.py); one skipped for a cool-down doesn't. Every
+request goes in the request log (health/usage.py) with what served it.
 """
 
 from __future__ import annotations
@@ -34,6 +35,7 @@ from .fetchers.paid import PaidFetcher
 from .fetchers.plain import PlainFetcher
 from .gate import BLOCKED, CHALLENGE, FETCH_ERROR, INTERACTIVE_CHALLENGE, Verdict, judge
 from .health.rates import Subject, SuccessRate, SuccessRates
+from .health.usage import CACHE, FAILED, RequestLog
 from .page import FetchedPage
 from .sites import SiteMemory, Spacer, site_of
 
@@ -103,6 +105,7 @@ class Router:
         self._spacer = Spacer(config.sites.min_interval_s)
         self._adapters = build_adapters(config.adapters)
         self._rates = SuccessRates(config.cache.resolved_path(), clock)
+        self._requests = RequestLog(config.cache.resolved_path(), clock)
 
     @property
     def fetchers(self) -> list[str]:
@@ -122,8 +125,17 @@ class Router:
         """Each enabled Site Adapter's rolling success rate over the configured window."""
         return self._rates.rates("adapter", self.site_adapters, self._config.health.window_s)
 
+    def fetcher_rates_between(self, since: float, until: float) -> list[SuccessRate]:
+        """Each Fetcher's attempts from `since` to `until`, in Ladder order."""
+        return self._rates.between("fetcher", self.fetchers, since, until)
+
     def get(
-        self, url: str, max_age_s: float | None = None, forced: str | None = None
+        self,
+        url: str,
+        max_age_s: float | None = None,
+        forced: str | None = None,
+        *,
+        check: bool = False,
     ) -> Success | Failure:
         """Content for `url`: from the cache if a copy is no older than `max_age_s`
         (default from config; 0 forces a live fetch), else from the Ladder. `forced`
@@ -131,7 +143,17 @@ class Router:
         skips any Site Adapter, and a forced Site Adapter has no Ladder to fall back
         to (a cache hit is still served).
         Raises UnknownFetcher if `forced` is neither on the Ladder nor an enabled
-        Site Adapter."""
+        Site Adapter. `check` marks a Canary Set check rather than a Caller's request,
+        in the request log."""
+        outcome = self._get(url, max_age_s, forced)
+        if isinstance(outcome, Failure):
+            served_by = FAILED
+        else:
+            served_by = CACHE if outcome.cached_at is not None else outcome.fetcher
+        self._requests.record("page", served_by, check=check)
+        return outcome
+
+    def _get(self, url: str, max_age_s: float | None, forced: str | None) -> Success | Failure:
         forceable = self.fetchers + self.site_adapters
         if forced is not None and forced not in forceable:
             raise UnknownFetcher(

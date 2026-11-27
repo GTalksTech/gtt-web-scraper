@@ -235,6 +235,11 @@ class Service(Protocol):
     def get(self, path: str) -> tuple[int, dict[str, Any]]: ...
 
 
+# Sent with every Canary request, so the service counts it as a check rather than a
+# Caller's request (health/usage.py; the API reads it as `x_gtt_check`).
+CHECK_HEADER = {"X-GTT-Check": "canary"}
+
+
 class HttpService:
     """A service at a base URL, such as http://127.0.0.1:3002."""
 
@@ -252,7 +257,7 @@ class HttpService:
         request = urllib.request.Request(
             self._base_url + path,
             data=json.dumps(body).encode(),
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", **CHECK_HEADER},
             method="POST",
         )
         return self._send(request)

@@ -26,10 +26,13 @@ class FakeIssueTracker:
     _next_id: int = 1000
 
     def incident_issues(self, state: str, since: datetime | None = None) -> list[Issue]:
+        return self.labelled("incident", state, since)
+
+    def labelled(self, label: str, state: str, since: datetime | None = None) -> list[Issue]:
         return [
             i
             for i in self.issues.values()
-            if "incident" in i.labels
+            if label in i.labels
             and (state == "all" or i.state == state)
             and (since is None or i.updated_at >= since)
         ]
@@ -39,7 +42,7 @@ class FakeIssueTracker:
 
     def create_issue(self, title: str, body: str, labels: list[str], assignee: str) -> Issue:
         number = len(self.issues) + 1
-        issue = Issue(number, title, body, "open", list(labels), None, self.now)
+        issue = Issue(number, title, body, "open", list(labels), None, self.now, created_at=self.now)
         self.issues[number] = issue
         self.comments[number] = []
         self.assignees[number] = assignee

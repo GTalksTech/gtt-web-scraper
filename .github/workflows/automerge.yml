@@ -1,0 +1,58 @@
+# Auto-merge (ticket #11, ADR 0002, ADR 0004). Each time the `tests` workflow passes
+# on a pull request, merge it if it is the fixing agent's: opened by claude[bot] from a
+# branch of this repo (never a fork's, even one the Claude app opened there), into
+# main, and not weakening the checks. One that removes a Canary Set entry or a Source
+# List domain, relabels the Content Gate corpus, loosens a Content Gate or health
+# threshold, or changes what decides merging is labelled ready-for-human and its
+# Incident turns 🙋 instead. Nothing else is touched. The rules are in
+# src/scraper/automerge/.
+#
+# Safe on a public repo: workflow_run always runs main's copy of this file and of the
+# code it checks out, never the pull request's, and reads the pull request's files
+# through the API as data. Branch protection on main (set by the setup wizard) still
+# refuses the merge unless the required `tests` check passed on its head.
+#
+# The merge uses this workflow's token, which starts no other workflow, so this job
+# starts the image build itself and sends the Incident's ✅.
+#
+# Actions are pinned to commit SHAs (tag in the comment).
+
+name: automerge
+
+on:
+  workflow_run:
+    workflows: [tests]
+    types: [completed]
+
+permissions: {}
+
+jobs:
+  merge:
+    if: >-
+      github.event.workflow_run.conclusion == 'success'
+      && github.event.workflow_run.event == 'pull_request'
+      && github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    concurrency:
+      group: automerge-${{ github.event.workflow_run.head_sha }}
+      cancel-in-progress: false
+    permissions:
+      contents: write # merge
+      pull-requests: write # merge, label
+      issues: write # the Incident's 🙋 or ✅
+      actions: write # start the image build
+    steps:
+      # main, not the pull request: the default for workflow_run.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+      - name: Merge the agent's pull request, or hold it for Garrett
+        env:
+          SHA: ${{ github.event.workflow_run.head_sha }}
+          GH_TOKEN: ${{ github.token }}
+          PYTHONPATH: src
+        # The policy reads YAML; only PyYAML is needed (same pin as uv.lock), not the
+        # whole service.
+        run: uv run --no-project --with pyyaml==6.0.2 python -m scraper.automerge --sha "$SHA"

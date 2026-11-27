@@ -1,0 +1,92 @@
+# The monthly summary (ticket #11). On the 1st, ask the service on pi5 for last month's
+# usage over the tailnet (as reachability.yml does) and write it, with the month's
+# Incidents, into the pinned summary issue. It only edits that issue's text, so it
+# never emails anyone; it never opens or comments on an issue. If pi5 doesn't answer,
+# the summary says so and still lists the Incidents (the reachability check raises
+# the Incident for a dead Pi).
+#
+# Needs the summary issue, which the setup wizard opens and pins (label
+# monthly-summary), and the repo secret TS_AUTHKEY (tag:ci, port 3002 on pi5 only).
+# Run it by hand for another month: Actions → monthly-summary → Run workflow.
+#
+# Actions are pinned to commit SHAs (tag in the comment).
+
+name: monthly-summary
+
+on:
+  schedule:
+    - cron: "41 7 1 * *"
+  workflow_dispatch:
+    inputs:
+      month:
+        description: "Month to sum up, YYYY-MM (default: last month)"
+        required: false
+
+permissions: {}
+
+concurrency:
+  group: monthly-summary
+  cancel-in-progress: false
+
+jobs:
+  summary:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      issues: write
+    env:
+      PI5_HOST: pi5
+      SERVICE_PORT: "3002"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - id: month
+        name: Pick the month
+        env:
+          ASKED: ${{ inputs.month }}
+        run: |
+          set -euo pipefail
+          month="${ASKED:-$(date -u -d "$(date -u +%Y-%m-01) -1 day" +%Y-%m)}"
+          [[ "$month" =~ ^[0-9]{4}-(0[1-9]|1[0-2])$ ]] || { echo "not a month: $month" >&2; exit 1; }
+          echo "month=$month" >> "$GITHUB_OUTPUT"
+
+      - id: tailnet
+        name: Join the tailnet
+        continue-on-error: true
+        uses: tailscale/github-action@99a8333667fff04fdd6cffb46dfd409f8329a7bf # v4.3.0
+        with:
+          authkey: ${{ secrets.TS_AUTHKEY }}
+          tags: tag:ci
+
+      - id: usage
+        name: Ask pi5 for the month's usage
+        if: steps.tailnet.outcome == 'success'
+        env:
+          MONTH: ${{ steps.month.outputs.month }}
+        run: |
+          set -uo pipefail
+          detail=""
+          for try in 1 2 3; do
+            if ip="$(sudo -n tailscale ip -4 "$PI5_HOST" 2>&1)" \
+              && out="$(curl -fsS --max-time 30 -o "$RUNNER_TEMP/usage.json" \
+                "http://$ip:$SERVICE_PORT/health/usage?month=$MONTH" 2>&1)"; then
+              detail=""
+              break
+            fi
+            detail="try $try: ${ip:-} ${out:-}"
+            (( try < 3 )) && sleep 30
+          done
+          eof="EOF_$(openssl rand -hex 8)"
+          { echo "detail<<$eof"; printf '%s\n' "$detail"; echo "$eof"; } >> "$GITHUB_OUTPUT"
+
+      - name: Write the summary issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PYTHONPATH: src
+          MONTH: ${{ steps.month.outputs.month }}
+          USAGE_FILE: ${{ runner.temp }}/usage.json
+          DETAIL: ${{ steps.tailnet.outcome != 'success' && 'joining the tailnet with TS_AUTHKEY failed; see this run''s log' || steps.usage.outputs.detail }}
+        run: python3 -m scraper.summary --month "$MONTH"
