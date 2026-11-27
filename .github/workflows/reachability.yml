@@ -73,4 +73,13 @@ jobs:
           JOINED: ${{ steps.tailnet.outcome == 'success' }}
           ANSWERED: ${{ steps.health.outputs.answered == 'true' }}
           DETAIL: ${{ steps.health.outputs.detail || 'joining the tailnet with TS_AUTHKEY failed; see this run''s log' }}
-        run: python3 -m scraper.pipeline reachability --joined "$JOINED" --answered "$ANSWERED"
+        run: python3 -m scraper.incident_issues reachability --joined "$JOINED" --answered "$ANSWERED"
+
+      # Riding along every 2 hours: a fix that never landed becomes 🙋, and an
+      # issue closed as fixed by something that starts no workflow still gets its ✅.
+      - name: Sweep the Incident issues
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PYTHONPATH: src
+        run: python3 -m scraper.incident_issues sweep

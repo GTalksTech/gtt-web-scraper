@@ -343,6 +343,23 @@ check "huge evidence is cut to fit GitHub's limit" \
 check "  saying where the full evidence is" grep -q "incidents-sent.jsonl on pi5" "$FAKE/curl.body"
 check "  while the sent log keeps all of it" test "$(wc -c < "$PI/incidents-sent.jsonl" | tr -d ' ')" -gt 200000
 
+reset_fakes; with_token
+python3 -c 'import json; print(json.dumps({"fingerprint": "q", "kind": "k", "effect": "e", "evidence": {"sample": "\"\\" * 100000}}))' \
+  > "$PI/incidents.jsonl"
+report
+check "evidence that grows when escaped still fits" \
+  test "$(wc -c < "$FAKE/curl.body" | tr -d ' ')" -lt 65535
+
+reset_fakes; with_token
+printf '{"fingerprint": "a", "kind": "k", "effect": "old"}\n{"fingerprint": "b", "kind": "k", "effect": "e"}\n{"fingerprint": "a", "kind": "k", "effect": "new"}\n' \
+  > "$PI/incidents.jsonl"
+report
+check "the same fingerprint twice in a batch is sent once (two would race to open two issues)" \
+  test "$(jq -r .client_payload.fingerprint "$FAKE/curl.body" | sort | paste -sd, -)" = "a,b"
+check "  with the newest evidence" \
+  test "$(jq -r 'select(.client_payload.fingerprint == "a") | .client_payload.effect' "$FAKE/curl.body")" = new
+check "  and all three are in the sent log" test "$(sent)" = 3
+
 # ── install.sh ─────────────────────────────────────────────────────────────
 echo "install.sh"
 install_pi() {

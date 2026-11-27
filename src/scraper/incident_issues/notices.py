@@ -20,7 +20,8 @@ whether Garrett needs to act), then the evidence, then the pipeline's state in a
 comment: the fingerprint that repeat detections are matched on, and when the agent ran.
 
 Limits: the agent gets at most MAX_ATTEMPTS runs per Incident and DAILY_RUNS runs a day
-across the repo (counted from those states). Hitting either turns the issue into 🙋.
+across the repo (counted from those states). Hitting either turns the issue into 🙋, as
+does a fix that hasn't landed FIX_LANDS_WITHIN after the agent's last run (`sweep`).
 """
 
 from __future__ import annotations
@@ -40,6 +41,7 @@ MAX_ATTEMPTS = 2
 DAILY_RUNS = 5
 RETRY_AFTER = timedelta(hours=12)  # a repeat this soon after a run waits for that run's fix
 REOPEN_WITHIN = timedelta(days=7)  # a fixed Incident back this soon is the same one
+FIX_LANDS_WITHIN = timedelta(days=2)  # an issue still open this long after a run needs Garrett
 EVIDENCE_CHARS = 40_000  # GitHub caps an issue body at 65,536 characters
 TITLE_CHARS = 250
 
@@ -75,6 +77,7 @@ class Issue:
     labels: list[str]
     closed_at: datetime | None
     updated_at: datetime
+    state_reason: str | None = None  # "completed" or "not_planned" once closed
 
 
 class IssueTracker(Protocol):
@@ -169,6 +172,7 @@ def file_incident(gh: IssueTracker, raw: Any, now: datetime) -> Filed:
         for issue in gh.incident_issues("closed", since=now - REOPEN_WITHIN)
         if (state := _state(issue))
         and state.fingerprint == incident.fingerprint
+        and issue.state_reason == "completed"
         and issue.closed_at is not None
         and issue.closed_at >= now - REOPEN_WITHIN
     ]
@@ -198,7 +202,7 @@ def after_attempt(gh: IssueTracker, number: int, outcome: Any, now: datetime) ->
     return _try_agent(gh, issue, state, now, failed=True)
 
 
-def fixed(gh: IssueTracker, number: int) -> None:
+def closed_as_fixed(gh: IssueTracker, number: int) -> None:
     """Issue `number` was closed as fixed: send the ✅ notice (once)."""
     issue = gh.issue(number)
     state = _state(issue)
@@ -237,6 +241,23 @@ def reachability(gh: IssueTracker, *, joined: bool, answered: bool, detail: str,
         )
     _resolve(gh, "pi_unreachable")
     return None
+
+
+def sweep(gh: IssueTracker, now: datetime) -> None:
+    """Catch what no event will: an agent run that ended in a pull request that never
+    merged (the issue would otherwise say "No, you needn't act" for ever), and an issue
+    closed as fixed without its ✅ (a close made with the workflow token starts no
+    workflow). Run with every reachability check."""
+    for issue in gh.incident_issues("open"):
+        state = _state(issue)
+        last = state.last_attempt() if state else None
+        if state and not state.needs_you and last is not None and now - last >= FIX_LANDS_WITHIN:
+            days = FIX_LANDS_WITHIN.days
+            _escalate(gh, issue, state, f"the agent's fix hasn't landed {days} days after its last attempt")
+    for issue in gh.incident_issues("closed", since=now - REOPEN_WITHIN):
+        state = _state(issue)
+        if state and issue.state_reason == "completed" and not issue.title.startswith("✅"):
+            _notify_fixed(gh, issue, state)
 
 
 # ── the steps ───────────────────────────────────────────────────────────────

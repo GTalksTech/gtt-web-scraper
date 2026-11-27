@@ -7,7 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 
-from scraper.pipeline.notices import Issue
+from scraper.incident_issues.notices import Issue
 
 
 @dataclass
@@ -69,6 +69,7 @@ class FakeIssueTracker:
             state=state or issue.state,
             closed_at=closed_at,
             updated_at=self.now,
+            state_reason="completed" if (state or issue.state) == "closed" else None,
         )
 
     def add_comment(self, number: int, body: str) -> int:
@@ -95,6 +96,11 @@ class FakeIssueTracker:
 
     def comment_texts(self, number: int) -> list[str]:
         return [text for _, text in self.comments[number]]
+
+    def garrett_closes(self, number: int, reason: str) -> None:
+        """Closed by hand (or by a merge), as "completed" or "not_planned"."""
+        self.update_issue(number, state="closed")
+        self.issues[number] = replace(self.issues[number], state_reason=reason)
 
     def someone_comments(self, number: int, text: str) -> None:
         """A comment by someone else (Garrett, or a cross-reference), not the pipeline."""

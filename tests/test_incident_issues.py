@@ -7,11 +7,12 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from scraper.pipeline.notices import (
+from scraper.incident_issues.notices import (
     after_attempt,
+    closed_as_fixed,
     file_incident,
-    fixed,
     reachability,
+    sweep,
 )
 
 from .fakegithub import FakeIssueTracker
@@ -166,8 +167,8 @@ def test_closing_a_fixed_incident_sends_one_fixed_notice() -> None:
     filed = file_incident(gh, canary_incident(), T0)
     close(gh, filed.issue)
 
-    fixed(gh, filed.issue)
-    fixed(gh, filed.issue)  # the event delivered twice
+    closed_as_fixed(gh, filed.issue)
+    closed_as_fixed(gh, filed.issue)  # the event delivered twice
 
     issue = gh.issue(filed.issue)
     assert issue.title == "✅ gtt-web-scraper fixed: pages from lwn.net can't be fetched"
@@ -182,7 +183,7 @@ def test_an_incident_back_within_a_week_of_its_fix_reopens_the_issue() -> None:
     gh = tracker()
     filed = file_incident(gh, canary_incident(), T0)
     close(gh, filed.issue)
-    fixed(gh, filed.issue)
+    closed_as_fixed(gh, filed.issue)
 
     back = file_incident(gh, canary_incident(), T0 + timedelta(days=2))
 
@@ -194,7 +195,7 @@ def test_an_incident_back_within_a_week_of_its_fix_reopens_the_issue() -> None:
     assert gh.emails[-1].subject == issue.title
 
     close(gh, filed.issue)
-    fixed(gh, filed.issue)
+    closed_as_fixed(gh, filed.issue)
     third = file_incident(gh, canary_incident(), T0 + timedelta(days=3))
     assert not third.run_agent  # two fixes that didn't hold: Garrett's turn
     assert gh.issue(filed.issue).title.startswith("🙋 ")
@@ -205,7 +206,7 @@ def test_an_incident_back_after_a_week_is_a_new_issue() -> None:
     filed = file_incident(gh, canary_incident(), T0)
     close(gh, filed.issue)
     gh.now = T0 + timedelta(days=1)
-    fixed(gh, filed.issue)
+    closed_as_fixed(gh, filed.issue)
 
     back = file_incident(gh, canary_incident(), T0 + timedelta(days=9))
     assert back.issue != filed.issue and back.attempt == 1
@@ -266,3 +267,56 @@ def test_something_that_isnt_an_incident_is_refused() -> None:
             continue
         raise AssertionError(f"accepted {raw!r}")
     assert gh.issues == {}
+
+
+def test_an_incident_garrett_closed_as_not_planned_isnt_reopened() -> None:
+    gh = tracker()
+    filed = file_incident(gh, canary_incident(), T0)
+    gh.garrett_closes(filed.issue, "not_planned")
+
+    back = file_incident(gh, canary_incident(), T0 + timedelta(days=1))
+    assert back.issue != filed.issue
+    assert gh.issue(filed.issue).state == "closed"
+
+
+def test_a_fix_that_never_lands_turns_into_needs_you() -> None:
+    gh = tracker()
+    filed = file_incident(gh, canary_incident(), T0)
+    after_attempt(gh, filed.issue, {"outcome": "pr_opened", "pr": "https://github.com/x/pull/7", "reason": ""}, T0)
+
+    sweep(gh, T0 + timedelta(days=1))
+    assert gh.issue(filed.issue).title.startswith("🚨 ")  # its checks may still be running
+
+    sweep(gh, T0 + timedelta(days=2, hours=1))
+    issue = gh.issue(filed.issue)
+    assert issue.title.startswith("🙋 gtt-web-scraper needs you: ")
+    assert "hasn't landed" in issue.body
+    sweep(gh, T0 + timedelta(days=3))
+    assert len(gh.emails) == 2  # the 🚨 and one 🙋
+
+
+def test_a_fixed_incident_closed_without_its_notice_gets_it_from_the_sweep() -> None:
+    # A close made with the workflow token starts no workflow, so no ✅ was sent.
+    gh = tracker()
+    filed = file_incident(gh, canary_incident(), T0)
+    gh.garrett_closes(filed.issue, "completed")
+
+    sweep(gh, T0 + timedelta(hours=2))
+    sweep(gh, T0 + timedelta(hours=4))
+
+    assert gh.issue(filed.issue).title.startswith("✅ ")
+    assert len([t for t in gh.comment_texts(filed.issue) if t.startswith("✅ fixed")]) == 1
+
+
+def test_the_sweep_leaves_alone_what_garrett_is_handling() -> None:
+    gh = tracker()
+    waiting = reachability(gh, joined=True, answered=False, detail="", now=T0)
+    dropped = file_incident(gh, canary_incident(), T0)
+    gh.garrett_closes(dropped.issue, "not_planned")
+    emails = len(gh.emails)
+
+    sweep(gh, T0 + timedelta(days=3))
+
+    assert waiting is not None and gh.issue(waiting.issue).title.startswith("🙋 ")
+    assert not gh.issue(dropped.issue).title.startswith("✅ ")
+    assert len(gh.emails) == emails

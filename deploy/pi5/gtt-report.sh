@@ -43,8 +43,8 @@ if [[ -s "$OUTBOX" ]]; then
   cat "$OUTBOX" >> "$SENDING"
   rm -f "$OUTBOX"
 fi
-keep="$(mktemp)"
-trap 'rm -f "$keep"' EXIT
+keep="$(mktemp)" index="$(mktemp)"
+trap 'rm -f "$keep" "$index"' EXIT
 
 send() {  # $1: the request body. Prints the HTTP status (000 if GitHub wasn't reached).
   curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 10 --max-time 30 \
@@ -56,10 +56,27 @@ send() {  # $1: the request body. Prints the HTTP status (000 if GitHub wasn't r
     --data-binary @- <<< "$1" 2> /dev/null || true
 }
 
-sent=0 offline=0
+# The same problem found twice in one batch (a deploy pass and a health run, say)
+# is sent once, with the newest evidence: two events at once would race to open
+# two issues for it.
+fingerprint_of() { jq -r 'objects | .fingerprint | strings' <<< "$1" 2> /dev/null || true; }
+n=0
 while IFS= read -r line || [[ -n "$line" ]]; do
+  n=$((n + 1))
+  printf '%s\t%s\n' "$n" "$(fingerprint_of "$line")" >> "$index"
+done < "$SENDING"
+newest() { awk -F'\t' -v fp="$1" '$2 == fp { n = $1 } END { print n }' "$index"; }
+
+sent=0 offline=0 n=0
+while IFS= read -r line || [[ -n "$line" ]]; do
+  n=$((n + 1))
   [[ -n "${line//[[:space:]]/}" ]] || continue
   if (( offline )); then echo "$line" >> "$keep"; continue; fi
+  fp="$(fingerprint_of "$line")"
+  if [[ -n "$fp" && "$(newest "$fp")" != "$n" ]]; then
+    echo "$line" >> "$SENT"   # superseded by a newer one with the same fingerprint
+    continue
+  fi
   if ! payload="$(jq -ce 'select(type == "object" and (.fingerprint | type) == "string"
                                and (.kind | type) == "string" and (.effect | type) == "string")
                           | {event_type: "incident", client_payload: .}' <<< "$line" 2> /dev/null)"; then
@@ -67,11 +84,15 @@ while IFS= read -r line || [[ -n "$line" ]]; do
     log "set aside a line that isn't an Incident (see $UNSENDABLE)"
     continue
   fi
-  if (( ${#payload} > MAX_PAYLOAD )); then
-    payload="$(jq -c --argjson n $((MAX_PAYLOAD / 2)) \
+  # Too big: keep the start of the evidence. Escaping can make that start longer
+  # than it looks, so cut again until it fits.
+  cut=$MAX_PAYLOAD full="$payload"
+  while (( ${#payload} > MAX_PAYLOAD && cut > 1000 )); do
+    cut=$((cut / 2))
+    payload="$(jq -c --argjson n "$cut" \
       '.client_payload.evidence |= {cutShort: "the full evidence is in incidents-sent.jsonl on pi5", start: (tojson | .[0:$n])}' \
-      <<< "$payload")"
-  fi
+      <<< "$full")"
+  done
   fingerprint="$(jq -r .client_payload.fingerprint <<< "$payload")"
   code="$(send "$payload")"
   case "$code" in

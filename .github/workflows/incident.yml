@@ -3,7 +3,7 @@
 # turns it into a GitHub issue that emails Garrett and starts the fixing agent
 # in the same run (events made with the workflow token don't trigger other
 # workflows). The decisions (new issue or repeat, the 2-attempt and ~5-runs-a-
-# day limits, the 🙋 and ✅ notices) live in src/scraper/pipeline/notices.py.
+# day limits, the 🙋 and ✅ notices) live in src/scraper/incident_issues/notices.py.
 #
 # The Incident's evidence holds text from the web: it is only ever passed
 # through environment variables and files, never into a script or the prompt.
@@ -46,7 +46,7 @@ jobs:
           INCIDENT: ${{ toJSON(github.event.client_payload) }}
           GH_TOKEN: ${{ github.token }}
           PYTHONPATH: src
-        run: python3 -m scraper.pipeline file
+        run: python3 -m scraper.incident_issues file
 
   fix:
     needs: file
@@ -117,7 +117,7 @@ jobs:
           OUTCOME: ${{ steps.agent1.outputs.structured_output }}
           GH_TOKEN: ${{ github.token }}
           PYTHONPATH: src
-        run: python3 -m scraper.pipeline attempted --issue "$ISSUE"
+        run: python3 -m scraper.incident_issues attempted --issue "$ISSUE"
 
       - name: Start the next attempt from a clean checkout
         if: steps.after1.outputs.run-agent == 'true'
@@ -138,7 +138,7 @@ jobs:
           OUTCOME: ${{ steps.agent2.outputs.structured_output }}
           GH_TOKEN: ${{ github.token }}
           PYTHONPATH: src
-        run: python3 -m scraper.pipeline attempted --issue "$ISSUE"
+        run: python3 -m scraper.incident_issues attempted --issue "$ISSUE"
 
   fixed:
     # Closed as completed (the agent's "Fixes #N" pull request merged, or Garrett
@@ -161,4 +161,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PYTHONPATH: src
           ISSUE: ${{ github.event.issue.number }}
-        run: python3 -m scraper.pipeline fixed --issue "$ISSUE"
+        run: python3 -m scraper.incident_issues fixed --issue "$ISSUE"

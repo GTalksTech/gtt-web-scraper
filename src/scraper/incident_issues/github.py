@@ -120,6 +120,7 @@ def _issue(raw: dict[str, Any]) -> Issue:
         labels=[str(label["name"]) for label in raw.get("labels") or []],
         closed_at=_time(raw.get("closed_at")),
         updated_at=_time(raw.get("updated_at")) or datetime.fromtimestamp(0).astimezone(),
+        state_reason=raw.get("state_reason"),
     )
 
 
