@@ -1,20 +1,24 @@
 """The page cache: results that passed the Content Gate, kept in SQLite by URL.
 
 Only accepted and suspect results are stored; a failure is never cached, and a failed
-live fetch leaves the last good copy in place.
+live fetch leaves the last good copy in place. Cache trouble (a locked, full or damaged
+database) never costs the Caller a page: it is logged and the request fetches live.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from collections.abc import Callable, Iterator
 from contextlib import closing, contextmanager
 from dataclasses import asdict, dataclass
-from pathlib import Path
 
+from .config import CacheConfig
 from .gate import Verdict
 from .page import FetchedPage
+
+log = logging.getLogger(__name__)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS pages (
@@ -36,10 +40,11 @@ class CachedPage:
 
 
 class PageCache:
-    def __init__(self, path: Path, clock: Callable[[], float]) -> None:
-        self._path = path
+    def __init__(self, config: CacheConfig, clock: Callable[[], float]) -> None:
+        self._config = config
+        self._path = config.resolved_path()
         self._clock = clock
-        path.parent.mkdir(parents=True, exist_ok=True)
+        self._path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as db:
             db.execute(_SCHEMA)
 
@@ -50,14 +55,21 @@ class PageCache:
         with closing(sqlite3.connect(self._path, timeout=10)) as db, db:
             yield db
 
-    def get(self, url: str, max_age_s: float) -> CachedPage | None:
-        """The cached page for `url` if it is no older than `max_age_s`."""
+    def get(self, url: str, max_age_s: float | None = None) -> CachedPage | None:
+        """The cached page for `url` if it is no older than `max_age_s` (default from
+        config; 0 or less never hits, forcing a live fetch)."""
+        if max_age_s is None:
+            max_age_s = self._config.default_max_age_s
         if max_age_s <= 0:
             return None
-        with self._connect() as db:
-            row = db.execute(
-                "SELECT fetched_at, fetcher, verdict, page FROM pages WHERE url = ?", (url,)
-            ).fetchone()
+        try:
+            with self._connect() as db:
+                row = db.execute(
+                    "SELECT fetched_at, fetcher, verdict, page FROM pages WHERE url = ?", (url,)
+                ).fetchone()
+        except sqlite3.Error:
+            log.exception("page cache unreadable; fetching %s live", url)
+            return None
         if row is None:
             return None
         fetched_at, fetcher, verdict, page = row
@@ -70,15 +82,22 @@ class PageCache:
             fetched_at=fetched_at,
         )
 
-    def put(self, url: str, page: FetchedPage, fetcher: str, verdict: Verdict) -> float:
-        """Store a result that passed the Content Gate. Returns when it was stored."""
+    def put(self, url: str, page: FetchedPage, fetcher: str, verdict: Verdict) -> None:
+        """Store a result that passed the Content Gate."""
         if verdict.decision == "rejected":
             raise ValueError("rejected results are never cached")
-        now = self._clock()
-        with self._connect() as db:
-            db.execute(
-                "INSERT OR REPLACE INTO pages (url, fetched_at, fetcher, verdict, page)"
-                " VALUES (?, ?, ?, ?, ?)",
-                (url, now, fetcher, json.dumps(asdict(verdict)), json.dumps(asdict(page))),
-            )
-        return now
+        try:
+            with self._connect() as db:
+                db.execute(
+                    "INSERT OR REPLACE INTO pages (url, fetched_at, fetcher, verdict, page)"
+                    " VALUES (?, ?, ?, ?, ?)",
+                    (
+                        url,
+                        self._clock(),
+                        fetcher,
+                        json.dumps(asdict(verdict)),
+                        json.dumps(asdict(page)),
+                    ),
+                )
+        except sqlite3.Error:
+            log.exception("page cache unwritable; %s not cached", url)

@@ -5,6 +5,8 @@ A fake clock stands in for time passing, so expiry is tested without waiting.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 
 from scraper.api import create_app
@@ -156,6 +158,34 @@ def test_failures_are_not_cached(config: Config, web: FakeWeb) -> None:
     assert web.hits("/story") == 2
     assert body["data"]["metadata"]["cacheState"] == "miss"
     assert "Raspberry Pi 5 runs the" in body["data"]["markdown"]
+
+
+def test_v2_scrape_honours_max_age_zero_too(config: Config, web: FakeWeb) -> None:
+    client, _ = make_client(config)
+    url = web.serve("/article", page("article.html"))
+
+    client.post("/v2/scrape", json={"url": url})
+    cached = client.post("/v2/scrape", json={"url": url}).json()
+    forced = client.post("/v2/scrape", json={"url": url, "maxAge": 0}).json()
+
+    assert cached["data"]["metadata"]["cacheState"] == "hit"
+    assert forced["data"]["metadata"]["cacheState"] == "miss"
+    assert web.hits("/article") == 2
+
+
+def test_broken_cache_file_falls_back_to_live_fetches(config: Config, web: FakeWeb) -> None:
+    client, _ = make_client(config)
+    url = web.serve("/article", page("article.html"))
+    # The cache file is damaged after the service started (disk trouble, a bad copy).
+    Path(config.cache.path).write_bytes(b"this is not a SQLite database" * 100)
+
+    first_status, first = scrape(client, url)
+    status, body = scrape(client, url)
+
+    assert (first_status, status) == (200, 200)
+    assert "Raspberry Pi 5 runs the" in body["data"]["markdown"]
+    assert body["data"]["metadata"]["cacheState"] == "miss"
+    assert web.hits("/article") == 2
 
 
 def test_failed_forced_fetch_keeps_the_last_good_copy(config: Config, web: FakeWeb) -> None:

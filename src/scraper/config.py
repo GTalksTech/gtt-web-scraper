@@ -9,7 +9,8 @@ from typing import Any
 
 import yaml
 
-DEFAULT_PATH = Path(__file__).resolve().parents[2] / "config" / "scraper.yaml"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_PATH = REPO_ROOT / "config" / "scraper.yaml"
 
 
 @dataclass
@@ -46,7 +47,7 @@ class CacheConfig:
 
     def resolved_path(self) -> Path:
         path = Path(self.path)
-        return path if path.is_absolute() else DEFAULT_PATH.parents[1] / path
+        return path if path.is_absolute() else REPO_ROOT / path
 
 
 @dataclass

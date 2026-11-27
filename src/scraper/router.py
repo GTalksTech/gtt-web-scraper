@@ -59,16 +59,20 @@ class Router:
     def __init__(self, config: Config, clock: Callable[[], float] = time.time) -> None:
         self._config = config
         self._ladder = _build_ladder(config)
-        self._cache = PageCache(config.cache.resolved_path(), clock)
+        self._cache = PageCache(config.cache, clock)
 
     def get(self, url: str, max_age_s: float | None = None) -> Success | Failure:
         """Content for `url`: from the cache if a copy is no older than `max_age_s`
         (default from config; 0 forces a live fetch), else from the Ladder."""
-        if max_age_s is None:
-            max_age_s = self._config.cache.default_max_age_s
         cached = self._cache.get(url, max_age_s)
         if cached is not None:
-            return Success(cached.page, cached.fetcher, cached.verdict, [], cached.fetched_at)
+            return Success(
+                page=cached.page,
+                fetcher=cached.fetcher,
+                verdict=cached.verdict,
+                attempts=[],
+                cached_at=cached.fetched_at,
+            )
         attempts: list[Attempt] = []
         for fetcher in self._ladder:
             attempt, page = self._try(fetcher, url)
