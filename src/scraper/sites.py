@@ -14,7 +14,8 @@ import sqlite3
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -57,9 +58,22 @@ class Spacer:
 class SiteState:
     # The Fetcher that last succeeded on the site, while it is still trusted to go first.
     remembered: str | None = None
-    # When the site's cool-down ends (seconds since the epoch), if it is on one.
-    cooldown_until: float | None = None
-    cooldown_reason: str | None = None
+    # The site's cool-down, if it is on one.
+    cooldown: Cooldown | None = None
+
+
+@dataclass(frozen=True)
+class Cooldown:
+    until: float  # seconds since the epoch
+    reason: str  # the Verdict reason of the block that started it, e.g. "http_429"
+
+    def explain(self, fetcher: str, site: str) -> str:
+        """Why `fetcher` was skipped for `site`, for the Caller."""
+        until = datetime.fromtimestamp(self.until, UTC).isoformat(timespec="seconds")
+        return (
+            f"{fetcher} skipped: {site} is on a cool-down until {until.replace('+00:00', 'Z')}"
+            f" after blocking the home connection ({self.reason})"
+        )
 
 
 _SCHEMA = """
@@ -101,8 +115,7 @@ class SiteMemory:
         cooling = cooldown_until is not None and now < cooldown_until
         return SiteState(
             remembered=fetcher if trusted else None,
-            cooldown_until=cooldown_until if cooling else None,
-            cooldown_reason=cooldown_reason if cooling else None,
+            cooldown=Cooldown(cooldown_until, cooldown_reason) if cooling else None,
         )
 
     def succeeded(self, site: str, fetcher: str) -> None:
@@ -119,9 +132,8 @@ class SiteMemory:
             {"site": site, "fetcher": fetcher, "now": now, "ttl": self._config.memory_ttl_s},
         )
 
-    def blocked(self, site: str, reason: str, state: SiteState) -> SiteState:
-        """Put `site` on a cool-down: it just blocked the home connection. Returns
-        `state` (what was known about the site) with the cool-down added."""
+    def blocked(self, site: str, reason: str) -> Cooldown:
+        """Put `site` on a cool-down: it just blocked the home connection."""
         until = self._clock() + self._config.cooldown_s
         self._write(
             "INSERT INTO sites (site, cooldown_until, cooldown_reason)"
@@ -130,7 +142,7 @@ class SiteMemory:
             " cooldown_until = :until, cooldown_reason = :reason",
             {"site": site, "until": until, "reason": reason},
         )
-        return replace(state, cooldown_until=until, cooldown_reason=reason)
+        return Cooldown(until, reason)
 
     def _write(self, sql: str, params: dict[str, object]) -> None:
         try:

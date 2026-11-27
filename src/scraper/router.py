@@ -11,7 +11,6 @@ from __future__ import annotations
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
 
 from .cache import PageCache
 from .config import Config
@@ -20,7 +19,7 @@ from .fetchers.paid import PaidFetcher
 from .fetchers.plain import PlainFetcher
 from .gate import BLOCKED, CHALLENGE, FETCH_ERROR, INTERACTIVE_CHALLENGE, Verdict, judge
 from .page import FetchedPage
-from .sites import SiteMemory, SiteState, Spacer, site_of
+from .sites import SiteMemory, Spacer, site_of
 
 
 @dataclass(frozen=True)
@@ -85,15 +84,15 @@ class Router:
         return [f.name for f in self._ladder]
 
     def get(
-        self, url: str, max_age_s: float | None = None, fetcher: str | None = None
+        self, url: str, max_age_s: float | None = None, forced: str | None = None
     ) -> Success | Failure:
         """Content for `url`: from the cache if a copy is no older than `max_age_s`
-        (default from config; 0 forces a live fetch), else from the Ladder. `fetcher`
-        forces a live fetch to use only that Fetcher (a cache hit is still served).
-        Raises UnknownFetcher if `fetcher` isn't on the Ladder."""
-        if fetcher is not None and fetcher not in self.fetchers:
+        (default from config; 0 forces a live fetch), else from the Ladder. `forced`
+        names the only Fetcher a live fetch may use (a cache hit is still served).
+        Raises UnknownFetcher if `forced` isn't on the Ladder."""
+        if forced is not None and forced not in self.fetchers:
             raise UnknownFetcher(
-                f"unknown Fetcher {fetcher!r}; expected one of: {', '.join(self.fetchers)}"
+                f"unknown Fetcher {forced!r}; expected one of: {', '.join(self.fetchers)}"
             )
         cached = self._cache.get(url, max_age_s)
         if cached is not None:
@@ -106,28 +105,29 @@ class Router:
             )
         site = site_of(url)
         state = self._sites.lookup(site)
+        cooldown = state.cooldown
         attempts: list[Attempt] = []
-        for step in self._plan(state, fetcher):
-            if step.home_connection and state.cooldown_until is not None:
-                attempts.append(_cooling_down(step, site, state))
+        for fetcher in self._plan(state.remembered, forced):
+            if fetcher.home_connection and cooldown is not None:
+                attempts.append(_skipped(fetcher, cooldown.explain(fetcher.name, site)))
                 continue
-            attempt, page = self._try(step, url, site)
+            attempt, page = self._try(fetcher, url, site)
             attempts.append(attempt)
-            if step.home_connection and _is_block(attempt):
-                state = self._sites.blocked(site, attempt.verdict.reason, state)
+            if fetcher.home_connection and _is_block(attempt):
+                cooldown = self._sites.blocked(site, attempt.verdict.reason)
             if page is not None and attempt.verdict.decision != "rejected":
-                self._sites.succeeded(site, step.name)
-                self._cache.put(url, page, step.name, attempt.verdict)
-                return Success(page, step.name, attempt.verdict, attempts)
+                self._sites.succeeded(site, fetcher.name)
+                self._cache.put(url, page, fetcher.name, attempt.verdict)
+                return Success(page, fetcher.name, attempt.verdict, attempts)
         return Failure(attempts)
 
-    def _plan(self, state: SiteState, forced: str | None) -> list[Fetcher]:
+    def _plan(self, remembered: str | None, forced: str | None) -> list[Fetcher]:
         """The Fetchers to try, in order: only the forced one, or the Ladder starting
         at the Fetcher that last succeeded on the site, then the rest in Ladder order."""
         if forced is not None:
             return [f for f in self._ladder if f.name == forced]
-        first = [f for f in self._ladder if f.name == state.remembered]
-        return first + [f for f in self._ladder if f.name != state.remembered]
+        first = [f for f in self._ladder if f.name == remembered]
+        return first + [f for f in self._ladder if f.name != remembered]
 
     def _try(
         self, fetcher: Fetcher, url: str, site: str
@@ -167,16 +167,12 @@ class Router:
 
 
 def _is_block(attempt: Attempt) -> bool:
+    """Whether a rejected result means the site is blocking the home connection."""
+    if attempt.verdict.decision != "rejected":
+        return False
     return attempt.status_code in _BLOCK_STATUSES or attempt.verdict.reason in _BLOCK_REASONS
 
 
-def _cooling_down(fetcher: Fetcher, site: str, state: SiteState) -> Attempt:
-    until = datetime.fromtimestamp(state.cooldown_until or 0, UTC)
-    message = (
-        f"{fetcher.name} skipped: {site} is on a cool-down until"
-        f" {until.isoformat(timespec='seconds').replace('+00:00', 'Z')}"
-        f" after blocking the home connection ({state.cooldown_reason})"
-    )
-    return Attempt(
-        fetcher.name, Verdict("rejected", COOLING_DOWN, message), None, unavailable=message
-    )
+def _skipped(fetcher: Fetcher, why: str) -> Attempt:
+    """A Fetcher not tried because its site is on a cool-down."""
+    return Attempt(fetcher.name, Verdict("rejected", COOLING_DOWN, why), None, unavailable=why)

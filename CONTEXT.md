@@ -25,6 +25,19 @@ _Avoid_: retry (a retry repeats the same Fetcher)
 **Paid Fetcher**:
 The last Fetcher on the Ladder, backed by the external paid service. When its quota is exhausted, it is unavailable and the request fails rather than falling further. It is never used for search.
 
+**Site**:
+A URL's host name. Rate limits, Cool-downs and Per-site memory are kept per Site. Not to be confused with a Site Adapter.
+
+**Home connection**:
+The internet connection the service itself fetches over (Garrett's home address). Fetchers that use it, such as the plain download, are spaced per Site and respect Cool-downs; the Paid Fetcher reaches sites from the paid service's network instead.
+
+**Cool-down**:
+A period after a Site blocked the Home connection (403, 429 or a challenge) during which Fetchers that use the Home connection skip that Site, so requests go straight to the Paid Fetcher.
+_Avoid_: ban, backoff
+
+**Per-site memory**:
+The Fetcher that last succeeded on a Site, which the next request to that Site tries first. It is trusted only for a while after it first succeeded, then the Ladder is climbed from the bottom again.
+
 **Site Adapter**:
 A route that catches URLs from a specific site and gets the content through that site's official feed or API instead of the Ladder.
 _Avoid_: plugin, special case, scraper rule
