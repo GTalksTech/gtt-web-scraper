@@ -37,7 +37,9 @@ _SCHEMA = (
         reason TEXT
     )
     """,
+    # Pruning reads by time; a Fetcher's latest outcome reads by Fetcher, then time.
     "CREATE INDEX IF NOT EXISTS fetcher_outcomes_at ON fetcher_outcomes (at)",
+    "CREATE INDEX IF NOT EXISTS fetcher_outcomes_fetcher_at ON fetcher_outcomes (fetcher, at)",
 )
 
 

@@ -13,9 +13,11 @@
 # inside it. It's promoted only if it passes at least as many Canary pages.
 # Otherwise the live image keeps serving, the new one is remembered as kept out
 # (.rejected-images, so it isn't re-tried every 10 minutes) and an Incident is
-# written to incidents.jsonl for the Incident pipeline. With nothing running yet
-# (first install) there's nothing to compare against, and the image just starts.
-# GTT_DEPLOY_UNGATED=1 skips the Canary Set (e.g. a rollback you chose).
+# written to incidents.jsonl for the Incident pipeline. The image that went live
+# is remembered (.live-image): after a reboot, whose compose down removed the
+# container, that image comes back first and anything newer is still checked.
+# Only on the first install is there nothing to compare against; the image just
+# starts. GTT_DEPLOY_UNGATED=1 skips the Canary Set (e.g. a rollback you chose).
 #
 # Exits non-zero if the service isn't up at the end (no tailnet IP, or Docker
 # couldn't start it), so the boot unit retries. A failed pull only warns: the
@@ -30,6 +32,7 @@ REJECTED_TAG=gtt-web-scraper:kept-out     # the last image the Canary Set kept o
 WAIT_S="${TAILNET_WAIT_S:-120}"   # at boot, tailscaled may still be connecting
 OUTBOX="$PWD/incidents.jsonl"     # Incidents, one JSON object per line
 REJECTED="$PWD/.rejected-images"  # image IDs the Canary Set kept out
+LIVE="$PWD/.live-image"           # the image ID last running as the live service
 
 log() { printf '%s\n' "$*"; }
 
@@ -81,6 +84,14 @@ export TAILNET_IP="$ip"
 
 before="$(image_id)"
 ref="$(docker compose config --images scraper)"
+if [[ -z "$before" && -s "$LIVE" ]] && docker image inspect "$(cat "$LIVE")" > /dev/null 2>&1; then
+  # No container (a reboot's compose down removed it), but an image was live:
+  # bring that one back first, so a newer one is checked against it as usual.
+  before="$(cat "$LIVE")"
+  log "starting the last live image $before again"
+  docker tag "$before" "$ref"
+  docker compose up -d --remove-orphans
+fi
 if ! docker compose pull --quiet; then
   log "warning: pulling from GHCR failed; running the image already on the Pi"
 fi
@@ -88,15 +99,16 @@ pulled="$(tagged_id "$ref")"
 
 if [[ -n "$before" && -n "$pulled" && "$pulled" != "$before" && -z "${GTT_DEPLOY_UNGATED:-}" ]]; then
   if grep -qxF "$pulled" "$REJECTED" 2> /dev/null; then
-    keep=1  # already kept out once; no need to run the Canary Set again
+    keep=1
+    log "kept out $pulled: the Canary Set kept it out before; $before keeps serving"
   elif passes_canary "$pulled"; then
     keep=0
   else
     keep=1
     echo "$pulled" >> "$REJECTED"
+    log "kept out $pulled: it failed the Canary Set check; $before keeps serving"
   fi
   if (( keep )); then
-    log "kept out $pulled: it did worse on the Canary Set; $before keeps serving"
     # Keep it tagged so the prune below leaves it: the next pull then finds it
     # here instead of downloading it again every 10 minutes.
     docker tag "$pulled" "$REJECTED_TAG"
@@ -110,6 +122,7 @@ after="$(image_id)"
 if [[ "$after" != "$before" ]]; then
   log "deployed $after (was ${before:-nothing}) on $TAILNET_IP:3002"
 fi
+[[ -n "$after" ]] && echo "$after" > "$LIVE"
 
 # Docker restarts a container that exits, not one that hangs. A hang shows up
 # as a failing healthcheck, so restart it here.

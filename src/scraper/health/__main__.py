@@ -20,6 +20,7 @@ import json
 import sys
 import time
 from collections.abc import Sequence
+from dataclasses import replace
 
 from ..config import CANARY_SET_FILE, HealthConfig, config_path, load_config
 from .canary import (
@@ -31,7 +32,7 @@ from .canary import (
     load_canary_set,
     run_canary,
 )
-from .incidents import Incident, incidents_for, judge_deploy
+from .incidents import DeployDecision, Incident, incidents_for, judge_deploy
 from .rates import FetcherRate
 
 SELF = "http://127.0.0.1:3002"
@@ -77,7 +78,38 @@ def _log(line: str) -> None:
     print(line, file=sys.stderr, flush=True)
 
 
-def _answers(service: HttpService, wait_s: float) -> bool:
+def deploy_check(
+    entries: list[CanaryEntry],
+    live: Service,
+    candidate: Service,
+    candidate_image: str,
+    wait_s: float,
+    recheck_pause_s: float = 30.0,
+) -> DeployDecision:
+    """Run the Canary Set against the live service and a candidate, and decide whether
+    the candidate may take traffic. Pages the candidate failed but the live service
+    passed are asked once more after a pause, so one blip on a real site (a timeout, a
+    429 the live run provoked) doesn't keep a good version out."""
+    live_report = _canary_of(entries, live, wait_s)
+    candidate_report = _canary_of(entries, candidate, wait_s)
+    if live_report is not None and candidate_report is not None:
+        live_ok = {r.entry.url for r in live_report.results if r.passed}
+        again = [r.entry for r in candidate_report.failures if r.entry.url in live_ok]
+        if again:
+            _log(f"checking {len(again)} page(s) the candidate failed once more")
+            time.sleep(recheck_pause_s)
+            retried = {r.entry.url: r for r in run_canary(again, candidate).results}
+            candidate_report = replace(
+                candidate_report,
+                results=[retried.get(r.entry.url, r) for r in candidate_report.results],
+            )
+            _log_report(candidate_report)
+    decision = judge_deploy(live_report, candidate_report, candidate_image)
+    _log(decision.summary)
+    return decision
+
+
+def _answers(service: Service, wait_s: float) -> bool:
     """Whether `service` answers its health check within `wait_s` (it may be starting)."""
     deadline = time.monotonic() + wait_s
     while True:
@@ -91,7 +123,7 @@ def _answers(service: HttpService, wait_s: float) -> bool:
         time.sleep(2)
 
 
-def _canary_of(entries: list[CanaryEntry], service: HttpService, wait_s: float) -> CanaryReport | None:
+def _canary_of(entries: list[CanaryEntry], service: Service, wait_s: float) -> CanaryReport | None:
     if not _answers(service, wait_s):
         _log(f"{service.name} isn't answering its health check")
         return None
@@ -117,10 +149,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "canary":
         write_incidents(health_run(entries, HttpService(args.target), config.health))
         return 0
-    live = _canary_of(entries, HttpService(args.live), args.wait)
-    candidate = _canary_of(entries, HttpService(args.candidate), args.wait)
-    decision = judge_deploy(live, candidate, args.candidate_image)
-    _log(decision.summary)
+    decision = deploy_check(
+        entries, HttpService(args.live), HttpService(args.candidate), args.candidate_image, args.wait
+    )
     write_incidents(decision.incidents)
     return 0 if decision.promote else KEPT_OUT
 

@@ -113,14 +113,6 @@ class CanaryReport:
     def failures(self) -> list[CanaryResult]:
         return [r for r in self.results if not r.passed]
 
-    def to_json(self) -> dict[str, Any]:
-        return {
-            "target": self.target,
-            "passed": self.passed,
-            "total": len(self.results),
-            "failures": [r.evidence() for r in self.failures],
-        }
-
 
 class ServiceUnreachable(Exception):
     """The service didn't answer at all (refused, timed out)."""

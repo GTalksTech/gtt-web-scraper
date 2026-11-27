@@ -125,7 +125,7 @@ fake systemctl 'printf "%s\n" "$*" >> "$FAKE/systemctl.log"
 [[ "$*" == "enable --now"* && -e "$FAKE/start_fails" ]] && exit 1; true'
 
 reset_fakes() {
-  rm -f "$FAKE"/* "$PI/incidents.jsonl" "$PI/.rejected-images"
+  rm -f "$FAKE"/* "$PI/incidents.jsonl" "$PI/.rejected-images" "$PI/.live-image"
   echo 100.64.0.5 > "$FAKE/ip"; echo sha256:old > "$FAKE/running"; echo sha256:old > "$FAKE/tagged"
   echo sha256:new > "$FAKE/remote"
 }
@@ -220,6 +220,20 @@ reset_fakes; rm "$FAKE/running" "$FAKE/tagged"
 up
 check "first install (nothing live to compare with): the image just starts" test "$(cat "$FAKE/running")" = "sha256:new"
 check "  without a candidate" fails ran "compose --profile candidate up"
+check "  and is remembered as the live image" test "$(cat "$PI/.live-image")" = "sha256:new"
+
+# A reboot (or systemctl stop) runs compose down: no container, but a live image.
+reset_fakes; up; rm "$FAKE/running"; echo sha256:newer > "$FAKE/remote"; echo 3 > "$FAKE/canary_rc"
+: > "$FAKE/docker.log"
+up
+check "after a reboot, the last live image comes back first" \
+  ran_before "tag sha256:new ghcr.io/gtalkstech/gtt-web-scraper:main" "compose pull"
+check "  and a new image is still checked against the Canary Set" ran "exec gtt-web-scraper-candidate"
+check "  and kept out when it does worse" test "$(cat "$FAKE/running")" = "sha256:new"
+rm "$FAKE/running"; : > "$FAKE/docker.log"
+up
+check "after another reboot, a kept-out image stays out" test "$(cat "$FAKE/running")" = "sha256:new"
+check "  without running the Canary Set again" fails ran "exec gtt-web-scraper-candidate"
 
 reset_fakes; echo 3 > "$FAKE/canary_rc"
 PATH="$BIN:$PATH" TAILNET_WAIT_S=0 GTT_DEPLOY_UNGATED=1 bash "$PI/gtt-up.sh" > "$FAKE/out.log" 2>&1

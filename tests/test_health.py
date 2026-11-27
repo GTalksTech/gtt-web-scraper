@@ -15,11 +15,11 @@ from fastapi.testclient import TestClient
 
 from scraper.api import create_app
 from scraper.config import CANARY_SET_FILE, DEFAULT_PATH, Config
-from scraper.health.__main__ import health_run, write_incidents
+from scraper.health.__main__ import deploy_check, health_run, write_incidents
 from scraper.health.canary import CanaryEntry, load_canary_set, run_canary
 
 from .fakefirecrawl import FakeFirecrawl, firecrawl_page
-from .fakeweb import FakeWeb, page
+from .fakeweb import FakeResponse, FakeWeb, page
 from .test_cache import FakeClock
 from .test_paid_fetcher import ARTICLE_MARKDOWN
 from .test_scrape import CF_HEADERS, scrape
@@ -257,6 +257,36 @@ def test_a_healthy_health_run_emits_nothing(client: TestClient, web: FakeWeb) ->
     assert health_run(entries, ClientService(client), Config().health) == []
 
 
+# ── the deploy check ───────────────────────────────────────────────────────
+
+
+def test_a_page_the_candidate_failed_once_is_checked_again_before_judging(
+    client: TestClient, web: FakeWeb
+) -> None:
+    # Live gets the page, the candidate hits a blip, then the re-check gets it.
+    url = web.serve(
+        "/flaky", page("article.html"), FakeResponse(b"busy", 503), page("article.html")
+    )
+    entries = [CanaryEntry(url=url, expected="accepted")]
+    service = ClientService(client)
+
+    decision = deploy_check(entries, service, service, "sha256:new", wait_s=0, recheck_pause_s=0)
+
+    assert decision.promote
+    assert web.hits("/flaky") == 3
+
+
+def test_a_page_the_candidate_keeps_failing_keeps_it_out(client: TestClient, web: FakeWeb) -> None:
+    url = web.serve("/broken", page("article.html"), FakeResponse(b"busy", 503))
+    entries = [CanaryEntry(url=url, expected="accepted")]
+    service = ClientService(client)
+
+    decision = deploy_check(entries, service, service, "sha256:new", wait_s=0, recheck_pause_s=0)
+
+    assert not decision.promote
+    assert [i.fingerprint for i in decision.incidents] == ["deploy_rejected"]
+
+
 # ── the seeded Canary Set ──────────────────────────────────────────────────
 
 
@@ -265,6 +295,8 @@ def test_the_seeded_canary_set_has_20_to_30_entries_with_some_known_bad_pages() 
 
     assert 20 <= len(entries) <= 30
     assert sum(e.expected == "rejected" for e in entries) >= 3
+    # Some known-bad pages come with a 200, so only the Content Gate can catch them.
+    assert any(e.expected == "rejected" and e.reason != "http_404" for e in entries)
     assert sum(e.expected == "accepted" for e in entries) >= 15
     # Never through the Paid Fetcher: a daily run must not spend its quota.
     assert all(e.fetcher == "plain" for e in entries)

@@ -19,7 +19,8 @@
 # Seeded 2026-11-27 and checked with the plain download from a home connection: every
 # entry got its expected Verdict. Left out then: raspberrypi.com (Cloudflare
 # challenge), blog.rust-lang.org (rendered by JavaScript), and kernel.org, the Rust
-# book's intro and docs.docker.com/compose/ (too little text: suspect).
+# book's intro and docs.docker.com/compose/ (too little text: suspect), and
+# notion.so's home page (real content, not a shell, from here).
 
 # ── real content: documentation and reference ──────────────────────────────
 - url: https://docs.python.org/3/library/sqlite3.html
@@ -85,3 +86,13 @@
 - url: https://www.bbc.co.uk/news/articles/doesnotexist123
   expected: rejected
   reason: http_404
+
+# ── known-bad: served with a 200, so only the Content Gate stands between them
+# and a Caller. No reason pinned: an empty JavaScript shell can read as
+# empty_shell or too_short; either way it must be rejected.
+- url: https://www.notion.so/this-does-not-exist
+  expected: rejected
+- url: https://x.com/home
+  expected: rejected
+- url: https://www.figma.com/files/recent
+  expected: rejected
