@@ -58,6 +58,12 @@ check "logs rotate (json-file, size-limited)" \
   test "$(q '.services.scraper.logging | "\(.driver) \(.options["max-size"]) \(.options["max-file"])"')" = "json-file 10m 3"
 check "has a healthcheck" test "$(q '.services.scraper.healthcheck.test | length')" -gt 0
 check "passes the wizard's env file to the service" test "$(q .services.scraper.environment.FIRECRAWL_API_KEY)" = "fc-test"
+check "page cache dir /app/data is a named volume (survives restarts and image updates)" \
+  test "$(q '[.services.scraper.volumes[]? | select(.target == "/app/data") | "\(.type):\(.source)"] | join(",")')" = "volume:cache"
+check "  declared as a project volume, not an external or host path" \
+  test "$(q '.volumes.cache.name // "missing"')" = "gtt-web-scraper_cache"
+check "image makes /app/data writable by the service user" \
+  grep -q "chown scraper:scraper /app/data" "$HERE/../../Dockerfile"
 check "refuses to start without TAILNET_IP (never binds 0.0.0.0)" \
   fails env -u TAILNET_IP docker compose -f "$PI/compose.yml" config -q 2> /dev/null
 

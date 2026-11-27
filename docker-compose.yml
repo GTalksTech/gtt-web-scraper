@@ -14,6 +14,8 @@ services:
       - "127.0.0.1:3002:3002"
     volumes:
       - ./config:/app/config:ro
+      # The page cache (SQLite), kept across restarts and rebuilds.
+      - cache:/app/data
     env_file:
       - path: .env
         required: false
@@ -30,3 +32,6 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+volumes:
+  cache:
