@@ -56,12 +56,18 @@ def create_app(config: Config | None = None) -> FastAPI:
             tried = "; ".join(
                 f"{a.fetcher}: {a.verdict.decision} ({a.verdict.reason})" for a in outcome.attempts
             )
+            error = f"No Fetcher produced real content for {request.url}. Tried {tried}."
+            # A Fetcher the request needed but couldn't use ("Paid Fetcher unavailable:
+            # quota exhausted") is the headline: it's why the request failed.
+            unavailable = outcome.unavailable
+            if unavailable:
+                error = f"{'. '.join(unavailable)}. {error}"
             return JSONResponse(
                 status_code=502,
                 content={
                     "success": False,
-                    "code": "SCRAPE_REJECTED",
-                    "error": f"No Fetcher produced real content for {request.url}. Tried {tried}.",
+                    "code": "FETCHER_UNAVAILABLE" if unavailable else "SCRAPE_REJECTED",
+                    "error": error,
                     "attempts": [_attempt_json(a) for a in outcome.attempts],
                 },
             )

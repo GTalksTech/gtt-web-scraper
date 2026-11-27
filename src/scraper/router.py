@@ -7,7 +7,8 @@ import time
 from dataclasses import dataclass, replace
 
 from .config import Config
-from .fetchers import Fetcher, FetchError
+from .fetchers import Fetcher, FetchError, FetcherUnavailable
+from .fetchers.paid import PaidFetcher
 from .fetchers.plain import PlainFetcher
 from .gate import CHALLENGE, FETCH_ERROR, Verdict, judge
 from .page import FetchedPage
@@ -18,6 +19,9 @@ class Attempt:
     fetcher: str
     verdict: Verdict
     status_code: int | None
+    # Set when the Fetcher couldn't be used at all, e.g. "Paid Fetcher unavailable:
+    # quota exhausted".
+    unavailable: str | None = None
 
 
 @dataclass(frozen=True)
@@ -32,9 +36,17 @@ class Success:
 class Failure:
     attempts: list[Attempt]
 
+    @property
+    def unavailable(self) -> list[str]:
+        """Fetchers the request needed but couldn't use: why the request failed."""
+        return [a.unavailable for a in self.attempts if a.unavailable]
+
 
 def _build_ladder(config: Config) -> list[Fetcher]:
-    available: dict[str, Fetcher] = {"plain": PlainFetcher(config.plain)}
+    available: dict[str, Fetcher] = {
+        "plain": PlainFetcher(config.plain),
+        "paid": PaidFetcher(config.paid),
+    }
     return [available[name] for name in config.ladder]
 
 
@@ -54,15 +66,20 @@ class Router:
 
     def _try(self, fetcher: Fetcher, url: str) -> tuple[Attempt, FetchedPage | None]:
         """One Fetcher's result, re-fetched briefly while a non-interactive challenge
-        might clear. Interactive challenges are returned at once."""
+        might clear (unless the Fetcher spends quota per fetch). Interactive challenges
+        are returned at once."""
         gate = self._config.gate
         try:
             page = fetcher.fetch(url)
+        except FetcherUnavailable as exc:
+            verdict = Verdict("rejected", exc.reason, str(exc))
+            return Attempt(fetcher.name, verdict, None, unavailable=str(exc)), None
         except FetchError as exc:
             return Attempt(fetcher.name, Verdict("rejected", FETCH_ERROR, str(exc)), None), None
         verdict = judge(page, gate)
         polls = 0
-        while verdict.reason == CHALLENGE and polls < gate.challenge_poll_attempts:
+        max_polls = gate.challenge_poll_attempts if fetcher.polls_challenges else 0
+        while verdict.reason == CHALLENGE and polls < max_polls:
             polls += 1
             time.sleep(gate.challenge_poll_interval_s)
             try:

@@ -37,7 +37,22 @@ def build_page(
         )
         or ""
     )
-    meta = trafilatura.extract_metadata(html, default_url=final_url)
+    return page_with_markdown(requested_url, final_url, status, headers, html, markdown)
+
+
+def page_with_markdown(
+    requested_url: str,
+    final_url: str,
+    status: int,
+    headers: dict[str, str],
+    html: str,
+    markdown: str,
+    title: str | None = None,
+    published: str | None = None,
+) -> FetchedPage:
+    """A page whose main content is already markdown (extracted here, or by a service
+    like Firecrawl). Title and Published date come from the HTML when it has them."""
+    meta = trafilatura.extract_metadata(html, default_url=final_url) if html.strip() else None
     return FetchedPage(
         requested_url=requested_url,
         final_url=final_url,
@@ -45,9 +60,9 @@ def build_page(
         headers={k.lower(): v for k, v in headers.items()},
         html=html,
         # The raw <title>, as Firecrawl reports it; the Gate reads it too.
-        title=_title_tag(html) or (meta.title if meta and meta.title else None),
+        title=_title_tag(html) or (meta.title if meta and meta.title else None) or title,
         markdown=markdown.strip(),
-        published=(meta.date if meta and meta.date else None),
+        published=(meta.date if meta and meta.date else None) or published,
     )
 
 

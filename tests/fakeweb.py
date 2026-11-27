@@ -40,7 +40,9 @@ class FakeWeb:
         self.requests: list[SeenRequest] = []
         self._lock = threading.Lock()
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
-        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+        self._thread = threading.Thread(
+            target=self._server.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True
+        )
 
     def start(self) -> None:
         self._thread.start()
