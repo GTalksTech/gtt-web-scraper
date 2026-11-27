@@ -196,6 +196,47 @@ def test_github_file_is_served_raw_in_a_code_fence(client: TestClient, apis: Api
     assert apis.github.requests[0].headers["accept"] == "application/vnd.github.raw+json"
 
 
+def test_github_file_with_an_encoded_name_is_found(client: TestClient, apis: Apis) -> None:
+    apis.github.serve(
+        "/repos/octo/widget/contents/docs/Getting%20Started.md?ref=main", text(README)
+    )
+
+    status, body = scrape(
+        client, "https://github.com/octo/widget/blob/main/docs/Getting%20Started.md"
+    )
+
+    assert status == 200
+    data = body["data"]
+    assert data["siteAdapter"] == "github"
+    assert data["metadata"]["title"] == "octo/widget/docs/Getting Started.md at main"
+    assert "This paragraph stands in for real prose" in data["markdown"]
+
+
+def test_github_pull_request_is_served_as_its_conversation(
+    client: TestClient, apis: Apis
+) -> None:
+    apis.github.serve(
+        "/repos/octo/widget/issues/7",
+        as_json(
+            {
+                "title": "Add arm64 images",
+                "state": "closed",
+                "user": {"login": "contributor"},
+                "created_at": "2026-10-01T09:00:00Z",
+                "pull_request": {"url": "https://api.github.com/repos/octo/widget/pulls/7"},
+                "body": LOREM * 6,
+            }
+        ),
+    )
+    apis.github.serve("/repos/octo/widget/issues/7/comments?per_page=100", as_json([]))
+
+    status, body = scrape(client, "https://github.com/octo/widget/pull/7")
+
+    assert status == 200
+    assert body["data"]["siteAdapter"] == "github"
+    assert "Pull request in octo/widget · closed" in body["data"]["markdown"]
+
+
 def test_rejected_adapter_result_falls_back_to_the_ladder(
     client: TestClient, apis: Apis, firecrawl: FakeFirecrawl
 ) -> None:
@@ -225,7 +266,7 @@ def test_failing_api_falls_back_to_the_ladder_and_a_failure_lists_both(
     assert status == 502
     assert body["success"] is False
     assert [(a["fetcher"], a["reason"]) for a in body["attempts"]] == [
-        ("github", "fetch_error"),
+        ("github", "http_404"),
         ("paid", "fetch_error"),
     ]
     assert body["attempts"][0]["detail"] == "GitHub API answered 404"
@@ -400,6 +441,36 @@ def test_reddit_refusing_the_json_view_falls_back_to_the_ladder(
     assert status == 200
     assert body["data"]["fetcher"] == "paid"
     assert body["data"]["attempts"][0]["detail"] == "Reddit answered 429"
+
+
+def test_reddit_refusing_the_json_view_puts_reddit_on_a_cool_down(
+    client: TestClient, apis: Apis, firecrawl: FakeFirecrawl
+) -> None:
+    # Reddit's JSON view goes over the home connection: a 429 is a block like any other.
+    first, second = "https://www.reddit.com/r/one/", "https://www.reddit.com/r/two/"
+    apis.reddit.serve("/r/one.json?raw_json=1", FakeResponse(b"slow down", 429))
+    apis.reddit.serve("/r/two.json?raw_json=1", as_json(listing(reddit_post())))
+    for url in (first, second):
+        firecrawl.serve(url, firecrawl_page("article.html", ARTICLE_MARKDOWN))
+    scrape(client, first)
+
+    status, body = scrape(client, second)
+
+    assert status == 200
+    assert body["data"]["fetcher"] == "paid"
+    assert body["data"]["attempts"][0]["fetcher"] == "reddit"
+    assert body["data"]["attempts"][0]["reason"] == "cooling_down"
+    assert apis.reddit.hits("/r/two.json?raw_json=1") == 0
+
+
+def test_reddit_front_page(client: TestClient, apis: Apis) -> None:
+    apis.reddit.serve("/.json?raw_json=1", as_json(listing(reddit_post(), reddit_post())))
+
+    status, body = scrape(client, "https://www.reddit.com/")
+
+    assert status == 200
+    assert body["data"]["siteAdapter"] == "reddit"
+    assert body["data"]["metadata"]["title"] == "Reddit front page"
 
 
 # ── YouTube ───────────────────────────────────────────────────────────────

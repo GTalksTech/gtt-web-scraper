@@ -19,12 +19,12 @@ from __future__ import annotations
 import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
-from urllib.parse import parse_qs, quote, urlencode, urlsplit
+from urllib.parse import parse_qs, quote, unquote, urlencode, urlsplit
 
 from ..config import AdaptersConfig
 from ..fetchers import FetchError
 from ..page import FetchedPage
-from . import adapter_page, get, get_json, iso_date
+from . import adapter_page, api_get, api_get_json, iso_date
 
 _HOSTS = ("youtube.com", "www.youtube.com", "m.youtube.com")
 _VIDEO_ID = re.compile(r"^[\w-]{11}$")
@@ -51,7 +51,8 @@ class _Target:
 def _target(url: str) -> _Target | None:
     parts = urlsplit(url)
     host = (parts.hostname or "").lower()
-    segments = [s for s in parts.path.split("/") if s]
+    # Decoded here, encoded once again when a channel page's path is requested.
+    segments = [unquote(s) for s in parts.path.split("/") if s]
     query = parse_qs(parts.query)
     if host == "youtu.be":
         if len(segments) == 1 and _VIDEO_ID.match(segments[0]):
@@ -98,6 +99,7 @@ class _Feed:
 
 class YouTubeAdapter:
     name = "youtube"
+    home_connection = True  # www.youtube.com, the site itself
 
     def __init__(self, config: AdaptersConfig) -> None:
         self._config = config
@@ -123,7 +125,7 @@ class YouTubeAdapter:
 
     def _video(self, url: str, video_id: str) -> FetchedPage:
         watch = f"{_PUBLIC}/watch?v={video_id}"
-        oembed = get_json(
+        oembed = api_get_json(
             self._url("/oembed", {"url": watch, "format": "json"}),
             "YouTube oEmbed",
             self._config.timeout_s,
@@ -151,7 +153,7 @@ class YouTubeAdapter:
         """The channel ID behind a handle or custom-name page, from its canonical link."""
         if not page_path.startswith("/"):
             raise FetchError(f"can't tell which YouTube channel {page_path!r} is")
-        page = get(
+        page = api_get(
             self._url(quote(page_path, safe="/@")), "YouTube channel page", self._config.timeout_s
         )
         html = str(page.text)
@@ -161,7 +163,7 @@ class YouTubeAdapter:
         return found.group(1)
 
     def _feed(self, params: dict[str, str]) -> _Feed:
-        response = get(
+        response = api_get(
             self._url("/feeds/videos.xml", params), "YouTube feed", self._config.timeout_s
         )
         try:

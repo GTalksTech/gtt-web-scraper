@@ -21,8 +21,24 @@ from ..page import FetchedPage, page_with_markdown
 USER_AGENT = "gtt-web-scraper/0.1 (self-hosted page reader)"
 
 
+# Every Site Adapter's name. None of them is also a Fetcher's.
+ADAPTER_NAMES = frozenset({"youtube", "reddit", "github"})
+
+
+class ApiError(FetchError):
+    """A feed or API answered, but with an error status instead of content."""
+
+    def __init__(self, what: str, status: int) -> None:
+        super().__init__(f"{what} answered {status}")
+        self.status = status
+
+
 class SiteAdapter(Protocol):
     name: str
+    # Whether the adapter reaches the requested URL's site over the home connection.
+    # Those adapters are spaced per site, skip a site on a cool-down, and start a
+    # cool-down when the site answers 403 or 429.
+    home_connection: bool
 
     def handles(self, url: str) -> bool:
         """Whether this adapter knows how to get `url` from its site's feed or API."""
@@ -46,7 +62,9 @@ def build_adapters(config: AdaptersConfig) -> list[SiteAdapter]:
     return [available[name] for name in config.enabled]
 
 
-def get(url: str, what: str, timeout_s: float, headers: dict[str, str] | None = None) -> Any:
+def api_get(
+    url: str, what: str, timeout_s: float, headers: dict[str, str] | None = None
+) -> Any:
     """One GET to a feed or API; anything but a 200 is a FetchError naming `what`."""
     try:
         response = curl.get(
@@ -58,12 +76,14 @@ def get(url: str, what: str, timeout_s: float, headers: dict[str, str] | None = 
     except RequestException as exc:
         raise FetchError(f"{what} unreachable: {exc}") from exc
     if response.status_code != 200:
-        raise FetchError(f"{what} answered {response.status_code}")
+        raise ApiError(what, response.status_code)
     return response
 
 
-def get_json(url: str, what: str, timeout_s: float, headers: dict[str, str] | None = None) -> Any:
-    response = get(url, what, timeout_s, headers)
+def api_get_json(
+    url: str, what: str, timeout_s: float, headers: dict[str, str] | None = None
+) -> Any:
+    response = api_get(url, what, timeout_s, headers)
     try:
         return response.json()
     except ValueError as exc:

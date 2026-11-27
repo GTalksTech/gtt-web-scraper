@@ -59,7 +59,9 @@ adapters:
   # playlists and videos (public feeds), any Reddit page (its JSON view), and GitHub
   # repos, issues, pull requests, releases and files (the REST API). Their results pass
   # the Content Gate; a failed or rejected one falls back to the Ladder. A forced
-  # Fetcher skips them. Remove a name to send that site's URLs straight to the Ladder.
+  # Fetcher skips them. The YouTube and Reddit adapters use the home connection, so
+  # sites.min_interval_s and cool-downs apply to them too. Remove a name to send that
+  # site's URLs straight to the Ladder.
   enabled:
     - youtube
     - reddit

@@ -9,9 +9,11 @@ during which only Fetchers that don't use it (the Paid Fetcher) are tried.
 A Site Adapter goes before the Ladder. Its result passes the Content Gate like any
 Fetcher's; if the adapter fails or its result is rejected, the request climbs the
 Ladder as if there were no adapter. An adapter's result is cached like a Fetcher's.
-Adapters call their site's official API rather than the page itself, so they are not
-spaced, skipped for cool-downs, or recorded in per-site memory, and a forced Fetcher
-skips them (the Caller asked for that Fetcher and nothing else).
+An adapter that reaches its site over the home connection (YouTube, Reddit) is spaced
+and respects cool-downs like the plain download, and a 403 or 429 from it starts one;
+the GitHub adapter calls GitHub's API host, not the page's. Adapters are not recorded
+in per-site memory, which orders the Ladder. A forced Fetcher skips them: the Caller
+asked for that Fetcher and nothing else.
 """
 
 from __future__ import annotations
@@ -20,7 +22,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 
-from .adapters import SiteAdapter, build_adapters
+from .adapters import ADAPTER_NAMES, ApiError, SiteAdapter, build_adapters
 from .cache import PageCache
 from .config import Config
 from .fetchers import COOLING_DOWN, Fetcher, FetchError, FetcherUnavailable
@@ -110,31 +112,34 @@ class Router:
             )
         cached = self._cache.get(url, max_age_s)
         if cached is not None:
-            adapters = {a.name for a in self._adapters}
             return Success(
                 page=cached.page,
                 fetcher=cached.fetcher,
                 verdict=cached.verdict,
                 attempts=[],
                 cached_at=cached.fetched_at,
-                site_adapter=cached.fetcher if cached.fetcher in adapters else None,
+                site_adapter=cached.fetcher if cached.fetcher in ADAPTER_NAMES else None,
             )
+        site = site_of(url)
+        state = self._sites.lookup(site)
+        cooldown = state.cooldown
         attempts: list[Attempt] = []
         adapter = None if forced is not None else self._adapter_for(url)
-        if adapter is not None:
-            attempt, page = self._try_adapter(adapter, url)
+        if adapter is not None and adapter.home_connection and cooldown is not None:
+            attempts.append(_skipped(adapter.name, cooldown.explain(adapter.name, site)))
+        elif adapter is not None:
+            attempt, page = self._try_adapter(adapter, url, site)
             attempts.append(attempt)
+            if adapter.home_connection and _is_block(attempt):
+                cooldown = self._sites.blocked(site, attempt.verdict.reason)
             if page is not None and attempt.verdict.decision != "rejected":
                 self._cache.put(url, page, adapter.name, attempt.verdict)
                 return Success(
                     page, adapter.name, attempt.verdict, attempts, site_adapter=adapter.name
                 )
-        site = site_of(url)
-        state = self._sites.lookup(site)
-        cooldown = state.cooldown
         for fetcher in self._plan(state.remembered, forced):
             if fetcher.home_connection and cooldown is not None:
-                attempts.append(_skipped(fetcher, cooldown.explain(fetcher.name, site)))
+                attempts.append(_skipped(fetcher.name, cooldown.explain(fetcher.name, site)))
                 continue
             attempt, page = self._try(fetcher, url, site)
             attempts.append(attempt)
@@ -150,11 +155,17 @@ class Router:
         return next((a for a in self._adapters if a.handles(url)), None)
 
     def _try_adapter(
-        self, adapter: SiteAdapter, url: str
+        self, adapter: SiteAdapter, url: str, site: str
     ) -> tuple[Attempt, FetchedPage | None]:
-        """A Site Adapter's result, judged by the Content Gate."""
+        """A Site Adapter's result, judged by the Content Gate. A refusal from the
+        site's API keeps its status code, so a 403 or 429 can start a cool-down."""
+        if adapter.home_connection:
+            self._spacer.wait_turn(site)
         try:
             page = adapter.fetch(url)
+        except ApiError as exc:
+            verdict = Verdict("rejected", f"http_{exc.status}", str(exc))
+            return Attempt(adapter.name, verdict, exc.status), None
         except FetchError as exc:
             return Attempt(adapter.name, Verdict("rejected", FETCH_ERROR, str(exc)), None), None
         return Attempt(adapter.name, judge(page, self._config.gate), page.status), page
@@ -211,6 +222,6 @@ def _is_block(attempt: Attempt) -> bool:
     return attempt.status_code in _BLOCK_STATUSES or attempt.verdict.reason in _BLOCK_REASONS
 
 
-def _skipped(fetcher: Fetcher, why: str) -> Attempt:
-    """A Fetcher not tried because its site is on a cool-down."""
-    return Attempt(fetcher.name, Verdict("rejected", COOLING_DOWN, why), None, unavailable=why)
+def _skipped(name: str, why: str) -> Attempt:
+    """A Fetcher or Site Adapter not tried because its site is on a cool-down."""
+    return Attempt(name, Verdict("rejected", COOLING_DOWN, why), None, unavailable=why)

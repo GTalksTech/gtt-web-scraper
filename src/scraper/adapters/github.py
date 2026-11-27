@@ -16,12 +16,12 @@ from __future__ import annotations
 
 from pathlib import PurePosixPath
 from typing import Any
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, unquote, urlsplit
 
 from ..config import AdaptersConfig
 from ..fetchers import FetchError
 from ..page import FetchedPage
-from . import adapter_page, get, get_json, iso_date
+from . import ApiError, adapter_page, api_get, api_get_json, iso_date
 
 _HOSTS = ("github.com", "www.github.com")
 
@@ -45,14 +45,16 @@ def _route(url: str) -> tuple[str, str, list[str]] | None:
     parts = urlsplit(url)
     if (parts.hostname or "").lower() not in _HOSTS:
         return None
-    segments = [s for s in parts.path.split("/") if s]
+    # Decoded here, encoded once again when the API path is built.
+    segments = [unquote(s) for s in parts.path.split("/") if s]
     if len(segments) < 2 or segments[0].lower() in _RESERVED:
         return None
     owner, repo, rest = segments[0], segments[1].removesuffix(".git"), segments[2:]
     if not rest:
         return owner, repo, rest
     kind = rest[0]
-    if kind in ("issues", "pull") and len(rest) >= 2 and rest[1].isdigit():
+    # Only the conversation: a pull request's /files or /commits tab goes to the Ladder.
+    if kind in ("issues", "pull") and len(rest) == 2 and rest[1].isdigit():
         return owner, repo, rest
     if kind == "releases" and (
         len(rest) == 1
@@ -67,6 +69,7 @@ def _route(url: str) -> tuple[str, str, list[str]] | None:
 
 class GitHubAdapter:
     name = "github"
+    home_connection = False  # api.github.com, not github.com
 
     def __init__(self, config: AdaptersConfig) -> None:
         self._config = config
@@ -92,7 +95,9 @@ class GitHubAdapter:
         repo = self._json(base)
         try:
             readme = self._raw(f"{base}/readme")
-        except FetchError:
+        except ApiError as exc:
+            if exc.status != 404:
+                raise
             readme = ""  # a repo without a README is still a repo
         name = str(repo.get("full_name") or base.removeprefix("/repos/"))
         facts = [
@@ -128,18 +133,21 @@ class GitHubAdapter:
         meta = [
             f"{kind} in {base.removeprefix('/repos/')}",
             str(issue.get("state", "")),
-            f"opened by @{_login(issue)} on {iso_date(issue.get('created_at'))}",
+            f"opened by @{_login(issue)}{_on(issue.get('created_at'))}",
         ]
         labels = [str(label.get("name")) for label in issue.get("labels") or []]
         if labels:
             meta.append(f"labels: {', '.join(labels)}")
         lines = [f"# {title}", "", " · ".join(meta), "", str(issue.get("body") or "").strip()]
         if isinstance(comments, list) and comments:
-            lines += ["", f"## Comments ({len(comments)})"]
+            total = issue.get("comments")
+            lines += ["", f"## Comments ({total if isinstance(total, int) else len(comments)})"]
+            if isinstance(total, int) and total > len(comments):
+                lines += ["", f"The first {len(comments)} are shown."]
             for comment in comments:
                 lines += [
                     "",
-                    f"### @{_login(comment)} on {iso_date(comment.get('created_at'))}",
+                    f"### @{_login(comment)}{_on(comment.get('created_at'))}",
                     "",
                     str(comment.get("body") or "").strip(),
                 ]
@@ -184,11 +192,21 @@ class GitHubAdapter:
         return f"{self._config.github_api_url.rstrip('/')}{path}"
 
     def _json(self, path: str) -> Any:
-        return get_json(self._api(path), "GitHub API", self._config.timeout_s, self._headers(_JSON))
+        return api_get_json(
+            self._api(path), "GitHub API", self._config.timeout_s, self._headers(_JSON)
+        )
 
     def _raw(self, path: str) -> str:
-        response = get(self._api(path), "GitHub API", self._config.timeout_s, self._headers(_RAW))
+        response = api_get(
+            self._api(path), "GitHub API", self._config.timeout_s, self._headers(_RAW)
+        )
         return str(response.text)
+
+
+def _on(timestamp: object) -> str:
+    """" on 2026-11-20" for an ISO timestamp, or "" when there isn't one."""
+    date = iso_date(timestamp)
+    return f" on {date}" if date else ""
 
 
 def _login(item: dict[str, Any]) -> str:
@@ -198,7 +216,9 @@ def _login(item: dict[str, Any]) -> str:
 def _release(release: dict[str, Any], heading: str | None) -> list[str]:
     """A release as markdown lines: optional heading, a facts line, then its notes."""
     name = release.get("name") or release.get("tag_name")
-    facts = [f"Tag {release.get('tag_name')}", f"published {iso_date(release.get('published_at'))}"]
+    facts = [f"Tag {release.get('tag_name')}"]
+    if iso_date(release.get("published_at")):
+        facts.append(f"published {iso_date(release.get('published_at'))}")
     if release.get("prerelease"):
         facts.append("pre-release")
     lines = [f"{heading} {name}", ""] if heading else []

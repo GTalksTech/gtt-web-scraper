@@ -15,7 +15,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit
 from ..config import AdaptersConfig
 from ..fetchers import FetchError
 from ..page import FetchedPage
-from . import adapter_page, epoch_date, get_json
+from . import adapter_page, api_get_json, epoch_date
 
 _MAX_COMMENTS = 100
 _MAX_DEPTH = 4
@@ -38,11 +38,13 @@ def _json_path(url: str) -> str | None:
     if path.split("/")[3:4] == ["s"] or path.endswith(".json"):
         return None
     query = [(k, v) for k, v in parse_qsl(parts.query) if k != "raw_json"]
-    return f"{path}.json?{urlencode([*query, ('raw_json', '1')])}"
+    # The front page's JSON view is "/.json".
+    return f"{path or '/'}.json?{urlencode([*query, ('raw_json', '1')])}"
 
 
 class RedditAdapter:
     name = "reddit"
+    home_connection = True  # the site itself
 
     def __init__(self, config: AdaptersConfig) -> None:
         self._config = config
@@ -54,7 +56,7 @@ class RedditAdapter:
         path = _json_path(url)
         if path is None:
             raise FetchError(f"Reddit adapter doesn't handle {url}")
-        body = get_json(
+        body = api_get_json(
             f"{self._config.reddit_url.rstrip('/')}{path}", "Reddit", self._config.timeout_s
         )
         if isinstance(body, list) and body and _children(body[0]):
