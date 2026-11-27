@@ -21,7 +21,14 @@ from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import CallToolResult, TextContent, ToolAnnotations
 from pydantic import Field
 
-from .rendering import attempt_json, confidence, failure_code, failure_error, iso_utc
+from .responses import (
+    UNKNOWN_FETCHER,
+    attempt_json,
+    confidence,
+    failure_code,
+    failure_error,
+    iso_utc,
+)
 from .router import Failure, Router, Success, UnknownFetcher
 
 INSTRUCTIONS = (
@@ -100,7 +107,7 @@ def add_fetch_tool(server: FastMCP, router: Router) -> None:
                 lambda: router.get(url, max_age_seconds, fetcher)
             )
         except UnknownFetcher as exc:
-            return _error(str(exc), {"code": "UNKNOWN_FETCHER", "error": str(exc)})
+            return _error(str(exc), {"code": UNKNOWN_FETCHER, "error": str(exc)})
         if isinstance(outcome, Failure):
             return _fetch_failure(url, outcome)
         return _fetch_success(url, outcome)

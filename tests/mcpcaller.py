@@ -1,4 +1,4 @@
-"""Seam 1: an MCP client that talks to the service the way Claude Code does.
+"""Seam 1: a Caller that talks to the service over MCP the way Claude Code does.
 
 The service runs under uvicorn on a local port, and each call opens an MCP session over
 Streamable HTTP (initialize, then the request), exactly as `claude mcp add --transport

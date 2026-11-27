@@ -4,10 +4,15 @@ tools so both say the same thing about the same result."""
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
 from .gate import Verdict
 from .router import Attempt, Failure
+
+Confidence = Literal["accepted", "possibly_partial"]
+# Why a request returned no content.
+FailureCode = Literal["UNKNOWN_FETCHER", "FETCHER_UNAVAILABLE", "SCRAPE_REJECTED"]
+UNKNOWN_FETCHER: FailureCode = "UNKNOWN_FETCHER"
 
 
 def attempt_json(attempt: Attempt) -> dict[str, Any]:
@@ -20,13 +25,13 @@ def attempt_json(attempt: Attempt) -> dict[str, Any]:
     }
 
 
-def confidence(verdict: Verdict) -> str:
+def confidence(verdict: Verdict) -> Confidence:
     """What a Caller is told to make of content: accepted, or Possibly partial when the
     best result was only suspect."""
     return "accepted" if verdict.decision == "accepted" else "possibly_partial"
 
 
-def failure_code(failure: Failure) -> str:
+def failure_code(failure: Failure) -> FailureCode:
     return "FETCHER_UNAVAILABLE" if failure.unavailable else "SCRAPE_REJECTED"
 
 

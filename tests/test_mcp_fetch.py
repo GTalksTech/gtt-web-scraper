@@ -15,7 +15,7 @@ from scraper.config import Config
 
 from .fakefirecrawl import FakeFirecrawl, firecrawl_page
 from .fakeweb import FakeWeb, page
-from .mcpclient import McpCaller
+from .mcpcaller import McpCaller
 from .test_paid_fetcher import ARTICLE_MARKDOWN
 
 

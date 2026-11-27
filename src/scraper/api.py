@@ -22,7 +22,14 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .config import Config, load_config
 from .mcp_server import create_mcp_server, serve_mcp
-from .rendering import attempt_json, confidence, failure_code, failure_error, iso_utc
+from .responses import (
+    UNKNOWN_FETCHER,
+    attempt_json,
+    confidence,
+    failure_code,
+    failure_error,
+    iso_utc,
+)
 from .router import Failure, Router, UnknownFetcher
 
 
@@ -63,7 +70,7 @@ def create_app(
         except UnknownFetcher as exc:
             return JSONResponse(
                 status_code=422,
-                content={"success": False, "code": "UNKNOWN_FETCHER", "error": str(exc)},
+                content={"success": False, "code": UNKNOWN_FETCHER, "error": str(exc)},
             )
         if isinstance(outcome, Failure):
             return JSONResponse(
