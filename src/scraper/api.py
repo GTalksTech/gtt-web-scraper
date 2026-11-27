@@ -6,13 +6,14 @@ take one extra of our own: `fetcher`, to force a specific Fetcher.
 
 A failure (no Fetcher produced real content, including a real upstream 404) is an
 HTTP 502 with success: false, so a Caller never mistakes it for content.
+
+The MCP tools for Claude Code (mcp_server.py) are served by the same app, at /mcp.
 """
 
 from __future__ import annotations
 
 import time
 from collections.abc import Callable
-from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import FastAPI
@@ -20,7 +21,9 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from .config import Config, load_config
-from .router import Attempt, Failure, Router, UnknownFetcher
+from .mcp_server import create_mcp_server, serve_mcp
+from .rendering import attempt_json, confidence, failure_code, failure_error, iso_utc
+from .router import Failure, Router, UnknownFetcher
 
 
 class ScrapeRequest(BaseModel):
@@ -38,22 +41,14 @@ class ScrapeRequest(BaseModel):
     fetcher: str | None = None
 
 
-def _attempt_json(attempt: Attempt) -> dict[str, Any]:
-    return {
-        "fetcher": attempt.fetcher,
-        "verdict": attempt.verdict.decision,
-        "reason": attempt.verdict.reason,
-        "detail": attempt.verdict.detail,
-        "statusCode": attempt.status_code,
-    }
-
-
 def create_app(
     config: Config | None = None, clock: Callable[[], float] = time.time
 ) -> FastAPI:
     config = config or load_config()
     router = Router(config, clock)
     app = FastAPI(title="gtt-web-scraper")
+    # The MCP tools for Claude Code, at /mcp on the same port (ADR 0003).
+    serve_mcp(app, create_mcp_server(router))
 
     @app.get("/health")
     def health() -> dict[str, str]:
@@ -71,31 +66,20 @@ def create_app(
                 content={"success": False, "code": "UNKNOWN_FETCHER", "error": str(exc)},
             )
         if isinstance(outcome, Failure):
-            tried = "; ".join(
-                f"{a.fetcher}: {a.verdict.decision} ({a.verdict.reason})" for a in outcome.attempts
-            )
-            error = f"No Fetcher produced real content for {request.url}. Tried {tried}."
-            # A Fetcher the request needed but couldn't use ("Paid Fetcher unavailable:
-            # quota exhausted") is the headline: it's why the request failed.
-            unavailable = outcome.unavailable
-            if unavailable:
-                error = f"{'. '.join(unavailable)}. {error}"
             return JSONResponse(
                 status_code=502,
                 content={
                     "success": False,
-                    "code": "FETCHER_UNAVAILABLE" if unavailable else "SCRAPE_REJECTED",
-                    "error": error,
-                    "attempts": [_attempt_json(a) for a in outcome.attempts],
+                    "code": failure_code(outcome),
+                    "error": failure_error(request.url, outcome),
+                    "attempts": [attempt_json(a) for a in outcome.attempts],
                 },
             )
         page = outcome.page
-        accepted = outcome.verdict.decision == "accepted"
         # Firecrawl's cache fields: cacheState is "hit" or "miss"; cachedAt only on a hit.
         cache: dict[str, str] = {"cacheState": "miss"}
         if outcome.cached_at is not None:
-            cached_at = datetime.fromtimestamp(outcome.cached_at, UTC)
-            cache = {"cacheState": "hit", "cachedAt": cached_at.isoformat().replace("+00:00", "Z")}
+            cache = {"cacheState": "hit", "cachedAt": iso_utc(outcome.cached_at)}
         return JSONResponse(
             {
                 "success": True,
@@ -110,9 +94,9 @@ def create_app(
                     },
                     "fetcher": outcome.fetcher,
                     "verdict": outcome.verdict.decision,
-                    "confidence": "accepted" if accepted else "possibly_partial",
+                    "confidence": confidence(outcome.verdict),
                     "publishedDate": page.published,
-                    "attempts": [_attempt_json(a) for a in outcome.attempts],
+                    "attempts": [attempt_json(a) for a in outcome.attempts],
                 },
             }
         )
