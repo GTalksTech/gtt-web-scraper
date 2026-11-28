@@ -230,7 +230,7 @@ def test_each_search_providers_attempts_and_successes_are_counted(
 
     seen = provider_rates(client)
 
-    assert list(seen) == ["tinyfish", "exa", "tavily", "duckduckgo"]
+    assert list(seen) == ["tinyfish", "exa", "tavily", "duckduckgo", "searxng"]
     assert (seen["tinyfish"]["attempts"], seen["tinyfish"]["successes"]) == (2, 0)
     assert (seen["exa"]["attempts"], seen["exa"]["successes"]) == (2, 1)
     assert (seen["tavily"]["attempts"], seen["tavily"]["successes"]) == (1, 1)
@@ -388,7 +388,7 @@ def test_a_canary_search_is_asked_of_every_provider_in_turn_live(
     report = run_canary(CanarySet(searches=[SQLITE]), ClientService(client))
 
     assert [(s.provider, s.passed) for s in report.searches] == [(p, True) for p in PROVIDERS]
-    assert [len(providers.queries[p]) for p in PROVIDERS] == [2, 1, 1, 1]
+    assert [len(providers.queries[p]) for p in PROVIDERS] == [2, 1, 1, 1, 1]
 
 
 def test_a_canary_search_without_the_expected_site_fails_with_the_results(
@@ -430,7 +430,7 @@ def test_a_canary_search_skips_a_provider_with_no_key_set(
 
     report = run_canary(CanarySet(searches=[SQLITE]), ClientService(client))
 
-    assert [s.provider for s in report.searches] == ["exa", "tavily", "duckduckgo"]
+    assert [s.provider for s in report.searches] == ["exa", "tavily", "duckduckgo", "searxng"]
     assert report.search_failures == []
 
 

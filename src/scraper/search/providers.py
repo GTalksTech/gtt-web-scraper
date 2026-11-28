@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Protocol
+from urllib.parse import urlsplit
 
 from curl_cffi import requests as curl
 from curl_cffi.requests.exceptions import RequestException
@@ -54,7 +55,7 @@ class SearchProvider(Protocol):
 
 
 class _HttpProvider:
-    """A Provider reached over its JSON API with a key."""
+    """A Provider reached over its JSON API, with a key except for our own SearXNG."""
 
     name: str
     key_env: str
@@ -236,6 +237,51 @@ class DuckDuckGo:
         ][:limit]
 
 
+def _absolute_http(url: str) -> bool:
+    parts = urlsplit(url)
+    return parts.scheme in ("http", "https") and bool(parts.hostname)
+
+
+class SearXNG(_HttpProvider):
+    """Our own SearXNG instance, a container next to the service (ADR 0005), which asks
+    several engines at once. docs.searxng.org/dev/search_api: GET /search?q=…&format=json,
+    no key; one page is about ten to thirty results, with no count parameter. Its
+    settings (deploy/pi5/searxng/settings.yml) must enable the JSON format, or it answers
+    403."""
+
+    name = "searxng"
+    key_env = ""
+    # Only with its limiter on, which our settings turn off.
+    quota_statuses = (429,)
+
+    def search(self, query: str, limit: int) -> list[SearchResult]:
+        body = self._call("GET", "/search", params={"q": query, "format": "json"})
+        found = [
+            SearchResult(
+                title=str(r.get("title") or ""),
+                url=str(r["url"]),
+                snippet=str(r.get("content") or ""),
+                provider=self.name,
+                published=r.get("publishedDate") or None,
+            )
+            for r in _results(body)
+            # An engine's redirect link SearXNG couldn't resolve ("http:///go/…") has
+            # no host; it would lead a Caller nowhere.
+            if _absolute_http(str(r["url"]))
+        ]
+        if not found:
+            # An engine that blocked SearXNG (a CAPTCHA, a rate limit) is listed here
+            # rather than raising. Every engine down is a failure, not an empty answer.
+            down = [
+                f"{e[0]} ({e[1]})" if len(e) > 1 and e[1] else str(e[0])
+                for e in body.get("unresponsive_engines") or []
+                if isinstance(e, list) and e
+            ]
+            if down:
+                raise ProviderError(f"every engine failed: {', '.join(down)}")
+        return found[:limit]
+
+
 def build_providers(config: SearchConfig) -> list[SearchProvider]:
     """The Search Providers named in config, in order."""
     available: dict[str, SearchProvider] = {
@@ -243,6 +289,7 @@ def build_providers(config: SearchConfig) -> list[SearchProvider]:
         "exa": Exa(config.exa_url, config.exa_api_key, config.timeout_s),
         "tavily": Tavily(config.tavily_url, config.tavily_api_key, config.timeout_s),
         "duckduckgo": DuckDuckGo(config.duckduckgo_url, config.timeout_s),
+        "searxng": SearXNG(config.searxng_url, None, config.timeout_s),
     }
     unknown = [name for name in config.providers if name not in available]
     if unknown:

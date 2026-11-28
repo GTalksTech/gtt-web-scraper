@@ -7,7 +7,8 @@
 # pi5 is also the tailnet's exit node and subnet router: these limits keep the
 # scraper from ever starving tailscaled of memory or CPU. Chrome (the Chrome
 # Fetcher's Engine) runs inside the container, so its processes, and the shared
-# memory it uses, count against the same caps.
+# memory it uses, count against the same caps. SearXNG, the last Search Provider,
+# runs beside it in its own small capped container.
 
 name: gtt-web-scraper
 
@@ -70,8 +71,9 @@ services:
       - path: .env
         required: true
     restart: "no"
-    # Smaller than the live service, so the two together (4.5 of 16 GB) still leave
-    # tailscaled room. Enough for Chrome with the Canary Set's pages, one at a time.
+    # Smaller than the live service, so the two together with SearXNG (5 of 16 GB)
+    # still leave tailscaled room. Enough for Chrome with the Canary Set's pages, one
+    # at a time. It asks SearXNG (below) at http://searxng:8080, like the live service.
     cpus: 1.0
     mem_limit: 1536m
     memswap_limit: 1536m
@@ -83,6 +85,35 @@ services:
       options:
         max-size: "10m"
         max-file: "1"
+
+  # SearXNG, the last Search Provider (ADR 0005): it asks a few engines at once from
+  # the home connection, so search still answers when every free-tier Provider has
+  # failed. The scraper and the candidate reach it at http://searxng:8080 on this
+  # project's network. It publishes no port, so nothing on the tailnet or the LAN
+  # can; it keeps no state, so it has no volume.
+  searxng:
+    # Pinned: a new SearXNG version comes in as a reviewed change to this line (and
+    # the same line in the root docker-compose.yml), never on its own.
+    image: docker.io/searxng/searxng:2026.11.21-c6ee3e9fd
+    container_name: gtt-web-scraper-searxng
+    pull_policy: missing
+    volumes:
+      # Committed settings (JSON output on, a few engines), read-only.
+      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
+    restart: unless-stopped
+    # Half a core and 512 MB: it answers tens of searches a day. With the live
+    # service and the candidate that is 5 of 16 GB, leaving tailscaled its room.
+    cpus: 0.5
+    mem_limit: 512m
+    memswap_limit: 512m
+    pids_limit: 256
+    # Killed before tailscaled, after the scraper (search falls back to the others).
+    oom_score_adj: 600
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "2"
 
 volumes:
   cache:

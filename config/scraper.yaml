@@ -105,12 +105,16 @@ search:
   # one fails, the Caller gets an explicit failure naming each Provider's error. Re-order
   # or replace Providers here. Firecrawl is never a Search Provider (it spends quota).
   # Keys come from TINYFISH_API_KEY, EXA_API_KEY and TAVILY_API_KEY in .env; DuckDuckGo
-  # needs none.
+  # and SearXNG need none.
   providers:
     - tinyfish
     - exa
     - tavily
     - duckduckgo
+    # Our own SearXNG container (deploy/pi5/compose.yml), the last resort: it asks
+    # several engines at once from the home connection and keeps answering when one
+    # blocks it. Free and keyless; ADR 0005 says why it is here.
+    - searxng
   timeout_s: 15
   # A query's results are served from the search cache for this long (24 hours), so
   # repeated searches don't spend free Provider quota.
@@ -123,6 +127,8 @@ search:
   exa_url: https://api.exa.ai
   tavily_url: https://api.tavily.com
   duckduckgo_url: https://html.duckduckgo.com
+  # The searxng service on the compose network; nothing outside it can reach SearXNG.
+  searxng_url: http://searxng:8080
 
 health:
   # Rolling success rates per Fetcher, Search Provider and Site Adapter, counted over

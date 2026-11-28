@@ -12,7 +12,7 @@ from scraper.api import create_app
 from scraper.config import Config
 
 from .fakefirecrawl import FakeFirecrawl, FirecrawlPage
-from .fakesearch import FakeSearchProviders, Hit
+from .fakesearch import PROVIDERS, FakeSearchProviders, Hit
 from .fakeweb import FakeWeb, page
 from .mcpcaller import McpCaller
 from .test_mcp_fetch import data, text
@@ -48,6 +48,8 @@ def dated(date: str | None, n: int = 1) -> Hit:
         ("tinyfish", "5 hours ago", "2027-01-15"),
         ("tinyfish", "sometime last spring", "unknown"),
         ("tinyfish", None, "unknown"),
+        ("searxng", "2026-10-14T00:00:00", "2026-10-14"),
+        ("searxng", None, "unknown"),
     ],
 )
 def test_a_providers_date_is_normalised_or_unknown(
@@ -57,7 +59,7 @@ def test_a_providers_date_is_normalised_or_unknown(
     reported: str | None,
     shown: str,
 ) -> None:
-    for name in ("tinyfish", "exa", "tavily"):
+    for name in PROVIDERS:
         if name != provider:
             providers.fail(name)
     providers.answer(provider, [dated(reported)])

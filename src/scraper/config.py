@@ -123,7 +123,7 @@ class SearchConfig:
     # Search Providers in the order a query tries them. A failing or out-of-quota
     # Provider passes the query to the next. Firecrawl is never one of them.
     providers: list[str] = field(
-        default_factory=lambda: ["tinyfish", "exa", "tavily", "duckduckgo"]
+        default_factory=lambda: ["tinyfish", "exa", "tavily", "duckduckgo", "searxng"]
     )
     timeout_s: float = 15.0
     # How long a query's results are served from the search cache.
@@ -133,8 +133,11 @@ class SearchConfig:
     exa_url: str = "https://api.exa.ai"
     tavily_url: str = "https://api.tavily.com"
     duckduckgo_url: str = "https://html.duckduckgo.com"
+    # Our own SearXNG container, by its compose service name.
+    searxng_url: str = "http://searxng:8080"
     # From the environment (TINYFISH_API_KEY, EXA_API_KEY, TAVILY_API_KEY), never from
-    # the YAML file. A Provider without its key is skipped. DuckDuckGo needs none.
+    # the YAML file. A Provider without its key is skipped. DuckDuckGo and SearXNG need
+    # none.
     tinyfish_api_key: str | None = None
     exa_api_key: str | None = None
     tavily_api_key: str | None = None

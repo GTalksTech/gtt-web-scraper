@@ -81,8 +81,9 @@ check "on the live service's network, so it can reach http://scraper:3002" \
   test "$(q '.services.candidate.networks | keys | join(",")')" = "default"
 check "memory capped at 1.5 GiB, Chrome included" \
   test "$(q .services.candidate.mem_limit)" -le $((1536 * 1024 * 1024))
-check "  live + candidate stay within 4.5 of 16 GiB, leaving tailscaled room" \
-  test $(( mem + $(q .services.candidate.mem_limit) )) -le $((4608 * 1024 * 1024))
+check "  live + candidate + SearXNG stay within 5 of 16 GiB, leaving tailscaled room" \
+  test $(( mem + $(q .services.candidate.mem_limit) + $(q .services.searxng.mem_limit) )) \
+       -le $((5 * 1024 * 1024 * 1024))
 check "  Chrome's shared memory sized, within its cap" \
   test "$(q '.services.candidate.shm_size // 0')" -ge $((128 * 1024 * 1024)) -a \
        "$(q '.services.candidate.shm_size // 0')" -lt "$(q .services.candidate.mem_limit)"
@@ -91,6 +92,66 @@ check "CPU capped at 1 core" test "$(q .services.candidate.cpus)" = "1"
 check "OOM killer picks the candidate first" \
   test "$(q .services.candidate.oom_score_adj)" -gt "$(q .services.scraper.oom_score_adj)"
 check "gets the wizard's env file too" test "$(q .services.candidate.environment.FIRECRAWL_API_KEY)" = "fc-test"
+
+echo "compose file: SearXNG (the last Search Provider, ticket #20)"
+# $C is still the config with the candidate profile on.
+PINNED='^docker\.io/searxng/searxng:[0-9]{4}\.[0-9]{1,2}\.[0-9]{1,2}-[0-9a-f]{7,}$'
+sx_image="$(q .services.searxng.image)"
+check "runs a pinned SearXNG version, never :latest" grep -Eq "$PINNED" <<< "$sx_image"
+check "started by a plain deploy (no profile)" \
+  test "$(compose_json | jq -r '.services.searxng.image // "absent"')" = "$sx_image"
+check "publishes no port: neither the tailnet nor the LAN can reach it" \
+  test "$(q '.services.searxng.ports // [] | length')" = 0
+check "  nor exposes one to the host network" test "$(q '.services.searxng.network_mode // "bridge"')" = "bridge"
+check "on the project network with the scraper and the candidate, so both reach it" \
+  test "$(q '[.services.scraper, .services.candidate, .services.searxng | .networks | keys | join(",")] | unique | join(" ")')" = "default"
+check "  at the address config/scraper.yaml gives the scraper" \
+  grep -qx "  searxng_url: http://searxng:8080" "$HERE/../../config/scraper.yaml"
+check "  and SearXNG is last in the Provider order there" \
+  test "$(awk '/^  providers:/{p=1; next} p && /^    - /{last=$2} p && /^  [a-z]/{p=0} END{print last}' "$HERE/../../config/scraper.yaml")" = searxng
+check "settings mounted read-only from the deploy dir" \
+  test "$(q '[.services.searxng.volumes[] | select(.target == "/etc/searxng/settings.yml") | "\(.type):\(.read_only)"] | join(",")')" = "bind:true"
+check "  the file travels with this folder to the Pi" \
+  test "$(q '.services.searxng.volumes[] | select(.target == "/etc/searxng/settings.yml") | .source')" = "$PI/searxng/settings.yml"
+check "no volume besides its settings: it keeps no state" test "$(q '.services.searxng.volumes | length')" = 1
+sx_mem=$(q .services.searxng.mem_limit)
+check "memory capped at 512 MiB or less" test "$sx_mem" -gt 0 -a "$sx_mem" -le $((512 * 1024 * 1024))
+check "  no swap beyond it" test "$(q .services.searxng.memswap_limit)" = "$sx_mem"
+check "CPU capped at half a core or less" \
+  python3 -c "import sys; c=float(sys.argv[1]); sys.exit(not 0 < c <= 0.5)" "$(q .services.searxng.cpus)"
+check "process count capped" test "$(q '.services.searxng.pids_limit // 0')" -gt 0
+check "OOM killer picks it before tailscaled" test "$(q '.services.searxng.oom_score_adj // 0')" -gt 0
+check "logs rotate (json-file, size-limited)" \
+  test "$(q '.services.searxng.logging | "\(.driver) \(.options["max-size"] // "none")"')" = "json-file 10m"
+check "restarts unless stopped" test "$(q .services.searxng.restart)" = "unless-stopped"
+check "gets no secrets: no env file" test "$(q '.services.searxng.environment // {} | length')" = 0
+
+# The committed settings, read with the project's own YAML parser.
+sx_setting() {
+  uv run --quiet --frozen --project "$HERE/../.." python -c \
+    'import sys, yaml; s = yaml.safe_load(open(sys.argv[1])); print(eval(sys.argv[2], {}, {"s": s}))' \
+    "$HERE/searxng/settings.yml" "$1"
+}
+check "settings: JSON output on (the scraper reads nothing else)" \
+  test "$(sx_setting '"json" in s["search"]["formats"]')" = True
+check "settings: a small set of engines" \
+  test "$(sx_setting 'len(s["use_default_settings"]["engines"]["keep_only"]) <= 6')" = True
+check "  each one switched on" \
+  test "$(sx_setting 'set(s["use_default_settings"]["engines"]["keep_only"]) <= {e["name"] for e in s["engines"] if e.get("disabled") is False} | {"duckduckgo"}')" = True
+check "settings: no limiter (the scraper is its only client)" test "$(sx_setting 's["server"]["limiter"]')" = False
+check "settings: not SearXNG's placeholder key (it refuses to start with it)" \
+  test "$(sx_setting 's["server"]["secret_key"] != "ultrasecretkey"')" = True
+
+echo "docker-compose.yml (local runs): SearXNG"
+R="$(cd "$HERE/../.." && docker compose -f docker-compose.yml config --format json 2> /dev/null)"
+check "the same pinned image as on the Pi" test "$(jq -r .services.searxng.image <<< "$R")" = "$sx_image"
+check "publishes no port" test "$(jq -r '.services.searxng.ports // [] | length' <<< "$R")" = 0
+check "the same settings file, read-only" \
+  test "$(jq -r '.services.searxng.volumes[] | select(.target == "/etc/searxng/settings.yml") | "\(.read_only) \(.source)"' <<< "$R")" \
+       = "true $(cd "$HERE" && pwd)/searxng/settings.yml"
+check "memory and CPU capped" \
+  test "$(jq -r '"\(.services.searxng.mem_limit > 0) \(.services.searxng.cpus > 0)"' <<< "$R")" = "true true"
+check "logs size-limited" test "$(jq -r '.services.searxng.logging.options["max-size"] // "none"' <<< "$R")" = 10m
 
 # ── fakes for gtt-up.sh and install.sh ─────────────────────────────────────
 FAKE="$T/fake"; BIN="$T/bin"; mkdir -p "$FAKE" "$BIN"

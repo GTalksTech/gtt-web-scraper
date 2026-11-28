@@ -1,0 +1,59 @@
+# SearXNG, the last Search Provider (ADR 0005). Mounted read-only at
+# /etc/searxng/settings.yml by deploy/pi5/compose.yml and the root docker-compose.yml.
+# Anything not set here keeps SearXNG's own default for the pinned image version.
+#
+# Only the scraper (and the candidate during a deploy) reaches it, over the compose
+# network: it publishes no port, so neither the tailnet nor the LAN can.
+
+use_default_settings:
+  engines:
+    # A few general web engines, so one blocking the home connection leaves the
+    # others. Each costs one outgoing request per search, so keep the list short.
+    # (Wikipedia is left out: SearXNG shows it only as an infobox, which the scraper
+    # doesn't read, and the general engines find Wikipedia pages anyway.)
+    keep_only:
+      - google
+      - bing
+      - duckduckgo
+      - brave
+
+# SearXNG ships Google, Bing and Brave switched off; keep_only alone leaves them off.
+engines:
+  - name: google
+    disabled: false
+  - name: bing
+    disabled: false
+  - name: brave
+    disabled: false
+
+general:
+  instance_name: gtt-searxng
+  # No usage statistics kept: nobody reads them.
+  enable_metrics: false
+
+search:
+  safe_search: 0
+  # No search-as-you-type: the scraper only ever sends whole queries.
+  autocomplete: ""
+  # JSON is what the scraper reads; without it SearXNG answers its API with 403.
+  formats:
+    - html
+    - json
+
+server:
+  # The limiter guards public instances against bots (and needs Valkey). Here the
+  # only client is the scraper, so it is off and SearXNG never rate-limits it.
+  limiter: false
+  public_instance: false
+  image_proxy: false
+  # SearXNG refuses to start with its placeholder key. The key signs image-proxy
+  # links and preference cookies, neither of which exists here (no image proxy, and
+  # the only client is the scraper over the compose network), so it guards nothing
+  # and is not a secret. SEARXNG_SECRET in the environment would override it.
+  secret_key: "gtt-searxng-internal-only-not-a-secret"
+
+outgoing:
+  # How long SearXNG waits for its engines, under the scraper's own search.timeout_s
+  # (15 s), so a slow engine is dropped and the others still answer in time.
+  request_timeout: 4.0
+  max_request_timeout: 8.0
