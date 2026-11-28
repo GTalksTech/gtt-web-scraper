@@ -3,8 +3,9 @@ Callers use.
 
 Responses keep Firecrawl's shape; our own fields (fetcher, siteAdapter, verdict,
 confidence, publishedDate as YYYY-MM-DD or "unknown", attempts) are extras that
-Firecrawl-speaking Callers ignore. Requests take one extra of our own: `fetcher`, to
-force a specific Fetcher.
+Firecrawl-speaking Callers ignore. Requests take one extra of our own: on scrape,
+`fetcher`, to force a specific Fetcher or Site Adapter; on search, `provider`, to force
+a specific Search Provider.
 
 A failure (no Fetcher produced real content, including a real upstream 404) is an
 HTTP 502 with success: false, so a Caller never mistakes it for content.
@@ -25,11 +26,13 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Header, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from .config import Config, load_config
+from .health.canary import CHECK_HEADER
+from .health.usage import RequestLog, month_bounds
 from .mcp_server import create_mcp_server, serve_mcp
 from .responses import (
     UNKNOWN_FETCHER,
@@ -45,7 +48,10 @@ from .responses import (
     search_result_json,
 )
 from .router import Failure, Router, UnknownFetcher
-from .search import Searcher, SearchFailure, SearchSuccess
+from .search import Searcher, SearchFailure, SearchSuccess, UnknownProvider
+
+# A search forced to a Search Provider that isn't configured.
+UNKNOWN_PROVIDER = "UNKNOWN_PROVIDER"
 
 
 class ScrapeRequest(BaseModel):
@@ -59,7 +65,8 @@ class ScrapeRequest(BaseModel):
     # means the configured default (24 hours).
     maxAge: int | None = Field(default=None, ge=0)  # noqa: N815 (Firecrawl's field name)
     # Our extra: force a live fetch to use only this Fetcher ("plain" or "paid"),
-    # skipping the rest of the Ladder and any Site Adapter. A cached copy is still served.
+    # skipping the rest of the Ladder and any Site Adapter, or only this Site Adapter
+    # ("github"…), with no Ladder to fall back to. A cached copy is still served.
     fetcher: str | None = None
 
 
@@ -74,6 +81,14 @@ class SearchRequest(BaseModel):
     query: str = Field(min_length=1, max_length=2000)
     # Omitted means Firecrawl's default for the API version (v1: 5, v2: 10).
     limit: int | None = Field(default=None, ge=1, le=100)
+    # Our extra: ask only this Search Provider, live (the cache isn't read), and don't
+    # pass the query on if it fails. The Canary Set uses it to check each Provider.
+    provider: str | None = None
+
+
+# The Canary Set's requests carry this header (X-GTT-Check, read as `x_gtt_check`) and
+# are counted as checks, not Callers' requests.
+CANARY_CHECK = CHECK_HEADER["X-GTT-Check"]
 
 
 def create_app(
@@ -82,6 +97,7 @@ def create_app(
     config = config or load_config()
     router = Router(config, clock)
     searcher = Searcher(config, clock)
+    requests = RequestLog(config.cache.resolved_path(), clock)
     app = FastAPI(title="gtt-web-scraper")
     # The MCP tools for Claude Code, at /mcp on the same port (ADR 0003).
     serve_mcp(app, create_mcp_server(router, searcher))
@@ -90,12 +106,60 @@ def create_app(
     def health() -> dict[str, str]:
         return {"status": "ok"}
 
+    # Rolling success rates, for the health runner (our own endpoints; Firecrawl has
+    # none like them).
+    @app.get("/health/fetchers")
+    def fetcher_health() -> dict[str, Any]:
+        """Each Fetcher's rolling success rate, in Ladder order."""
+        return {
+            "windowSeconds": config.health.window_s,
+            "fetchers": [rate.to_json() for rate in router.fetcher_rates()],
+        }
+
+    @app.get("/health/providers")
+    def provider_health() -> dict[str, Any]:
+        """Each Search Provider's rolling success rate, in the order a query tries them."""
+        return {
+            "windowSeconds": config.health.window_s,
+            "providers": [rate.to_json() for rate in searcher.provider_rates()],
+        }
+
+    @app.get("/health/adapters")
+    def adapter_health() -> dict[str, Any]:
+        """Each enabled Site Adapter's rolling success rate."""
+        return {
+            "windowSeconds": config.health.window_s,
+            "adapters": [rate.to_json() for rate in router.adapter_rates()],
+        }
+
+    @app.get("/health/usage")
+    def usage(month: str = Query(default="", pattern=r"^(\d{4}-\d{2})?$")) -> JSONResponse:
+        """A month's usage (YYYY-MM, UTC; default this month), for the monthly summary:
+        Callers' requests by what served them, the Canary Set's checks, and each
+        Fetcher's attempts (the Paid Fetcher's are Firecrawl credits spent)."""
+        month = month or time.strftime("%Y-%m", time.gmtime(clock()))
+        try:
+            since, until = month_bounds(month)
+        except ValueError:
+            return JSONResponse(status_code=422, content={"error": f"not a month: {month!r}"})
+        return JSONResponse(
+            {
+                "month": month,
+                **requests.between(since, until),
+                "fetchers": [r.to_json() for r in router.fetcher_rates_between(since, until)],
+            }
+        )
+
     @app.post("/v1/scrape")
     @app.post("/v2/scrape")
-    def scrape(request: ScrapeRequest) -> JSONResponse:
+    def scrape(
+        request: ScrapeRequest, x_gtt_check: str | None = Header(default=None)
+    ) -> JSONResponse:
         max_age_s = None if request.maxAge is None else request.maxAge / 1000
         try:
-            outcome = router.get(request.url, max_age_s, request.fetcher)
+            outcome = router.get(
+                request.url, max_age_s, request.fetcher, check=x_gtt_check == CANARY_CHECK
+            )
         except UnknownFetcher as exc:
             return JSONResponse(
                 status_code=422,
@@ -139,8 +203,18 @@ def create_app(
             }
         )
 
-    def search(request: SearchRequest, default_limit: int, shape: WebShape) -> JSONResponse:
-        outcome = searcher.search(request.query, request.limit or default_limit)
+    def search(
+        request: SearchRequest, default_limit: int, shape: WebShape, check: bool
+    ) -> JSONResponse:
+        try:
+            outcome = searcher.search(
+                request.query, request.limit or default_limit, request.provider, check=check
+            )
+        except UnknownProvider as exc:
+            return JSONResponse(
+                status_code=422,
+                content={"success": False, "code": UNKNOWN_PROVIDER, "error": str(exc)},
+            )
         if isinstance(outcome, SearchFailure):
             return JSONResponse(
                 status_code=502,
@@ -149,14 +223,20 @@ def create_app(
         return _search_success(outcome, shape)
 
     @app.post("/v1/search")
-    def search_v1(request: SearchRequest) -> JSONResponse:
+    def search_v1(
+        request: SearchRequest, x_gtt_check: str | None = Header(default=None)
+    ) -> JSONResponse:
         # v1: the results are `data` itself.
-        return search(request, default_limit=5, shape=lambda web: web)
+        check = x_gtt_check == CANARY_CHECK
+        return search(request, default_limit=5, shape=lambda web: web, check=check)
 
     @app.post("/v2/search")
-    def search_v2(request: SearchRequest) -> JSONResponse:
+    def search_v2(
+        request: SearchRequest, x_gtt_check: str | None = Header(default=None)
+    ) -> JSONResponse:
         # v2: results are grouped by source; we only search the web.
-        return search(request, default_limit=10, shape=lambda web: {"web": web})
+        check = x_gtt_check == CANARY_CHECK
+        return search(request, default_limit=10, shape=lambda web: {"web": web}, check=check)
 
     return app
 

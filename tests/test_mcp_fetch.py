@@ -103,10 +103,10 @@ def test_block_page_is_an_explicit_failure_listing_every_fetcher_tried(
         "rejected",
         "cookie_wall",
     )
-    assert [a["fetcher"] for a in got["attempts"]] == ["plain", "paid"]
+    assert [a["fetcher"] for a in got["attempts"]] == ["plain", "chrome", "paid"]
     shown = text(result)
     assert f"No Fetcher produced real content for {url}" in shown
-    assert "plain: rejected (cookie_wall); paid: rejected" in shown
+    assert "plain: rejected (cookie_wall); chrome: rejected (cookie_wall); paid: rejected" in shown
     assert "We value your privacy" not in shown
 
 
@@ -142,10 +142,12 @@ def test_unknown_forced_fetcher_is_an_error_naming_the_choices(
 ) -> None:
     url = web.serve("/article", page("article.html"))
 
-    result = mcp.call("fetch", url=url, fetcher="chrome")
+    result = mcp.call("fetch", url=url, fetcher="firefox")
 
     assert result.isError is True
-    assert "unknown Fetcher 'chrome'; expected one of: plain, paid" in text(result)
+    assert "unknown Fetcher or Site Adapter 'firefox'; expected one of: plain, chrome, paid" in text(
+        result
+    )
     assert web.hits("/article") == 0
 
 

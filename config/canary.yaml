@@ -1,0 +1,149 @@
+# The Canary Set: trusted, content-rich, current URLs with the Verdict the service must
+# give each, run daily on pi5 and against every new version before it takes traffic
+# (python -m scraper.health; deploy/pi5/gtt-canary.sh and gtt-up.sh), plus one page per
+# Site Adapter and a few search queries with a site their results must include. A page
+# that doesn't get its expected Verdict, or a search that doesn't find its site, raises
+# an Incident.
+#
+# Each entry:
+#   url:       the page
+#   expected:  accepted (real content), suspect, or rejected (known-bad: never content)
+#   reason:    optional; the Verdict reason expected too (e.g. http_404)
+#   fetcher:   optional; the Fetcher or Site Adapter to force (default plain, the
+#              plain download), or "auto" for none. Keep it plain, chrome (the Chrome
+#              Fetcher) or a Site Adapter: a run must never spend the Paid Fetcher's
+#              quota, and a known-bad page would otherwise escalate to it.
+#
+# Search entries (query/expect) are described with them, at the end.
+#
+# Rules (ADR 0002): the agent may add entries. Removing one, or loosening it (accepted
+# to suspect, dropping a reason), is excluded from auto-merge and needs Garrett's
+# approval. Pick pages that are stable, public, need no JavaScript, and sit on sites
+# that tolerate a daily visit; one site's failures make one Incident.
+#
+# Seeded 2026-11-27 and checked with the plain download from a home connection: every
+# entry got its expected Verdict. Left out then: raspberrypi.com (Cloudflare
+# challenge), blog.rust-lang.org (rendered by JavaScript; now a Chrome Fetcher entry below), and kernel.org, the Rust
+# book's intro and docs.docker.com/compose/ (too little text: suspect), and
+# notion.so's home page (real content, not a shell, from here).
+
+# ── real content: documentation and reference ──────────────────────────────
+- url: https://docs.python.org/3/library/sqlite3.html
+  expected: accepted
+- url: https://en.wikipedia.org/wiki/Raspberry_Pi
+  expected: accepted
+- url: https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/Overview
+  expected: accepted
+- url: https://www.postgresql.org/docs/current/sql-select.html
+  expected: accepted
+- url: https://www.sqlite.org/lang_select.html
+  expected: accepted
+- url: https://doc.rust-lang.org/book/ch04-01-what-is-ownership.html
+  expected: accepted
+- url: https://go.dev/doc/effective_go
+  expected: accepted
+- url: https://nodejs.org/api/fs.html
+  expected: accepted
+- url: https://www.rfc-editor.org/rfc/rfc9110.html
+  expected: accepted
+- url: https://kubernetes.io/docs/concepts/overview/
+  expected: accepted
+- url: https://docs.docker.com/reference/dockerfile/
+  expected: accepted
+- url: https://tailscale.com/kb/1017/install
+  expected: accepted
+- url: https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html
+  expected: accepted
+- url: https://git-scm.com/docs/git-rebase
+  expected: accepted
+- url: https://github.com/python/cpython
+  expected: accepted
+
+# ── real content: pages that change daily (current) ────────────────────────
+- url: https://en.wikipedia.org/wiki/Main_Page
+  expected: accepted
+- url: https://lwn.net/
+  expected: accepted
+- url: https://news.ycombinator.com/
+  expected: accepted
+- url: https://www.python.org/downloads/
+  expected: accepted
+- url: https://www.debian.org/News/
+  expected: accepted
+- url: https://www.theregister.com/
+  expected: accepted
+- url: https://pypi.org/project/requests/
+  expected: accepted
+
+# ── known-bad: missing pages that must never come back as content ──────────
+- url: https://github.com/GTalksTech/definitely-not-a-repo-xyz
+  expected: rejected
+  reason: http_404
+- url: https://en.wikipedia.org/wiki/Definitely_not_an_article_xyz_123
+  expected: rejected
+  reason: http_404
+- url: https://docs.python.org/3/library/definitely-not-a-module-xyz.html
+  expected: rejected
+  reason: http_404
+- url: https://developer.mozilla.org/en-US/docs/Definitely/Not/A/Page_xyz
+  expected: rejected
+  reason: http_404
+- url: https://www.bbc.co.uk/news/articles/doesnotexist123
+  expected: rejected
+  reason: http_404
+
+# ── known-bad: served with a 200, so only the Content Gate stands between them
+# and a Caller. No reason pinned: an empty JavaScript shell can read as
+# empty_shell or too_short; either way it must be rejected.
+- url: https://www.notion.so/this-does-not-exist
+  expected: rejected
+- url: https://x.com/home
+  expected: rejected
+- url: https://www.figma.com/files/recent
+  expected: rejected
+
+# ── Site Adapters: one page each, forced through the adapter ───────────────
+# Forced, so a failing adapter can't hide behind the Ladder (and its Paid Fetcher).
+# Added 2026-11-27. Checked then from the MacBook: github and youtube accepted;
+# reddit answered 403 there, so its first runs on pi5 will say whether the Reddit
+# adapter works from the home connection.
+- url: https://github.com/torvalds/linux
+  expected: accepted
+  fetcher: github
+- url: https://www.youtube.com/@RaspberryPi
+  expected: accepted
+  fetcher: youtube
+- url: https://www.reddit.com/r/raspberry_pi/
+  expected: accepted
+  fetcher: reddit
+
+# ── JavaScript-heavy pages, forced through the Chrome Fetcher ──────────────
+# Empty shells to the plain download (too_short and empty_shell on 2026-11-27);
+# real content only once Chrome has run their scripts. Forced, so a broken Chrome
+# can't hide behind the Paid Fetcher (and a run never spends its quota). Added
+# 2026-11-27 and checked then in the arm64 image (Chrome 158 under Xvfb, pi5's
+# memory caps): both accepted.
+- url: https://blog.rust-lang.org/
+  expected: accepted
+  fetcher: chrome
+- url: https://crates.io/crates/serde
+  expected: accepted
+  fetcher: chrome
+
+# ── searches ───────────────────────────────────────────────────────────────
+# Each search entry:
+#   query:     what to search for
+#   expect:    a domain at least one result must come from (subdomains count)
+#   provider:  optional; the one Search Provider to ask. Omit it (the usual) and the
+#              query is asked of every Search Provider in config/scraper.yaml, one at
+#              a time and live, so a failing Provider can't hide behind the next.
+#              A Provider with no key set is skipped.
+# Pick queries whose top results have been the same site for years. Each one costs
+# every Provider one search of its free quota a day, and two more per deploy (live and
+# candidate), so keep the list short.
+- query: python sqlite3 module documentation
+  expect: docs.python.org
+- query: Raspberry Pi single-board computer wikipedia
+  expect: wikipedia.org
+- query: git rebase documentation
+  expect: git-scm.com

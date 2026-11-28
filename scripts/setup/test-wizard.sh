@@ -64,11 +64,25 @@ if [[ "$hdrs" == *BAD* ]]; then printf 401
 elif [[ "$url" == */dispatches ]]; then printf 204
 else printf 200; fi'
 
+# gh: secrets in a folder, branch protection as the JSON last PUT, and the summary
+# issue as a number in a file (with marker files for pinned and locked).
 fake gh 'case "$1 $2" in
   "auth status") exit 0 ;;
   "api repos/GTalksTech/gtt-web-scraper") echo true ;;
+  "api -X") [[ "$4" == repos/GTalksTech/gtt-web-scraper/branches/main/protection ]] || exit 1
+            cat > "$FAKE/protection.json" ;;
+  "api repos/GTalksTech/gtt-web-scraper/branches/main/protection")
+            [[ -f "$FAKE/protection.json" ]] || exit 1
+            jq -r "$4" "$FAKE/protection.json" ;;
   "secret set") cat > "$FAKE/secrets/$3"; echo "$GH_REPO" > "$FAKE/gh_repo" ;;
   "secret list") ls "$FAKE/secrets" ;;
+  "label create") echo "$*" >> "$FAKE/labels.log" ;;
+  "issue list") cat "$FAKE/issue" 2>/dev/null || true ;;
+  "issue create") echo "$*" >> "$FAKE/issue_create.log"; echo 7 > "$FAKE/issue"
+                  echo "https://github.com/GTalksTech/gtt-web-scraper/issues/7" ;;
+  "issue lock") touch "$FAKE/locked.$3" ;;
+  "issue pin") touch "$FAKE/pinned.$3" ;;
+  "issue view") [[ -f "$FAKE/pinned.$3" ]] && echo true || echo false ;;
   *) exit 1 ;;
 esac'
 
@@ -106,6 +120,7 @@ echo "run 1: first-time setup"
   echo ""; echo ""; echo "sk-ant-oat01-BAD"             # run setup-token; empty, bad
   echo "sk-ant-oat01-good"; echo ""                     # then the good token
   echo "tskey-wrong"; echo "tskey-auth-good"; echo ""   # bad prefix re-asked
+  echo ""; echo ""                          # protect main, pin the summary
 } | run_wizard && rc=0 || rc=$?
 
 check "wizard finishes"                      [ "$rc" -eq 0 ]
@@ -129,6 +144,13 @@ check "no temp files left behind"            [ -z "$(ls -A "$TMP")" ]
 check "policy snippet has CI port rule"      grep -q '"tag:ci"\], "dst": \["gtt-pi5"\], "ip": \["tcp:3002"\]' "$FAKE/out.log"
 check "policy SSH rule uses pi5's tag"       grep -q '"dst": \["tag:pi"\], "users": \["pi"\]' "$FAKE/out.log"
 check "policy SSH rule for untagged hermes"  grep -q '"dst": \["autogroup:self"\], "users": \["garrett"\]' "$FAKE/out.log"
+protection() { jq -e "$1" "$FAKE/protection.json" >/dev/null 2>&1; }
+check "main requires the tests check from Actions" \
+  protection '.required_status_checks.checks == [{"context": "tests", "app_id": 15368}]'
+check "no reviews required (the agent's fix can merge)" protection '.required_pull_request_reviews == null'
+check "no force pushes or deleting main"     protection '.allow_force_pushes == false and .allow_deletions == false'
+check "summary issue opened with its label"  grep -q -- '--label monthly-summary' "$FAKE/issue_create.log"
+check "summary issue pinned and locked"      [ -f "$FAKE/pinned.7" ] && [ -f "$FAKE/locked.7" ]
 check "SSH limited to the two computers"     grep -q '"src": \["gtt-mac", "gtt-desktop"\], "dst": \["gtt-pi5", "gtt-hermes"\], "ip": \["tcp:22"\]' "$FAKE/out.log"
 
 # ── run 2: re-run keeps everything with just Enter (and "n" on secrets) ───
@@ -142,12 +164,14 @@ cp "$FAKE/remote.env" "$T/remote.before"
   for _ in 1 2 3 4 5; do echo ""; echo ""; done          # keep each key
   echo "n"; echo ""                         # keep Claude secret
   echo "n"; echo ""                         # keep Tailscale secret
+  echo ""; echo ""                          # protect main, pin the summary
 } | run_wizard && rc=0 || rc=$?
 
 check "re-run finishes"                      [ "$rc" -eq 0 ]
 check "re-run leaves pi5's env unchanged"    cmp -s "$T/remote.before" "$FAKE/remote.env"
 check "re-run keeps Claude secret"           secret_is CLAUDE_CODE_OAUTH_TOKEN sk-ant-oat01-good
 check "re-run keeps Tailscale secret"        secret_is TS_AUTHKEY tskey-auth-good
+check "re-run opens no second summary issue" [ "$(wc -l < "$FAKE/issue_create.log" | tr -d ' ')" -eq 1 ]
 check "re-run keeps answers"                 grep -qx "HERMES_SSH_USER='garrett'" "$FAKE/setup.env"
 
 # ── run 2b: pi5's env file exists but can't be read ───────────────────────

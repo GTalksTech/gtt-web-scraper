@@ -4,6 +4,8 @@ each Provider's error.
 
 A Provider that fails, runs out of quota, has no key or finds nothing passes the query
 to the next. Firecrawl is never a Search Provider: search spends no Paid Fetcher quota.
+Each Provider asked counts towards its rolling success rate (health/rates.py); a search
+served from the cache asks none.
 
 The cache keeps each Provider's answer as it came. Shaping that answer for the Caller
 (`_present`) happens after the cache, on every search, so a change to how results are
@@ -20,7 +22,16 @@ from ..cache import PageCache
 from ..config import Config
 from ..dates import published_date
 from .cache import SearchCache
-from .providers import ProviderError, SearchProvider, SearchResult, build_providers
+from ..fetchers import QUOTA_EXHAUSTED
+from ..health.rates import Outcome, SuccessRate, SuccessRates
+from ..health.usage import CACHE, FAILED, RequestLog
+from .providers import (
+    NOT_CONFIGURED,
+    ProviderError,
+    SearchProvider,
+    SearchResult,
+    build_providers,
+)
 from .source_list import SourceRanking
 
 __all__ = [
@@ -29,7 +40,18 @@ __all__ = [
     "SearchResult",
     "SearchSuccess",
     "Searcher",
+    "UnknownProvider",
 ]
+
+# Why a Provider's answer gave nothing usable, beside the reasons a ProviderError gives.
+# No results counts against the Provider's success rate; results the Source List
+# blocks entirely don't (the Provider worked).
+NO_RESULTS = "no_results"
+ALL_BLOCKED = "all_blocked"
+
+
+class UnknownProvider(ValueError):
+    """A Caller forced a Search Provider that isn't configured."""
 
 
 @dataclass(frozen=True)
@@ -37,7 +59,10 @@ class ProviderAttempt:
     """A Search Provider that was asked and gave nothing usable, and why."""
 
     provider: str
-    error: str
+    error: str  # for the Caller to read
+    # For code to read: quota_exhausted, not_configured, rate_limited, no_results,
+    # all_blocked or provider_error.
+    reason: str
 
 
 @dataclass(frozen=True)
@@ -64,6 +89,9 @@ class Searcher:
         self._cache = SearchCache(config.cache.resolved_path(), self.cache_max_age_s, clock)
         self._ranking = SourceRanking(config.source_list)
         self._pages = PageCache(config.cache, clock)
+        self._rates = SuccessRates(config.cache.resolved_path(), clock)
+        self._requests = RequestLog(config.cache.resolved_path(), clock)
+        self._health_window_s = config.health.window_s
         self._clock = clock
 
     @property
@@ -71,11 +99,36 @@ class Searcher:
         """The Search Providers' names, in the order a query tries them."""
         return [p.name for p in self._providers]
 
-    def search(self, query: str, limit: int) -> SearchSuccess | SearchFailure:
+    def provider_rates(self) -> list[SuccessRate]:
+        """Each Search Provider's rolling success rate over the configured window, in
+        the order a query tries them."""
+        return self._rates.rates("provider", self.providers, self._health_window_s)
+
+    def search(
+        self, query: str, limit: int, forced: str | None = None, *, check: bool = False
+    ) -> SearchSuccess | SearchFailure:
         """Up to `limit` results for `query`: from the cache if the same query was
         searched recently (24 hours by default) for at least as many results, else from
-        the first Provider that answers with results."""
-        cached = self._cache.get(query, limit)
+        the first Provider that answers with results. `forced` names the only Provider
+        to ask, live: the cache isn't read, and a failure isn't passed on.
+        Raises UnknownProvider if `forced` isn't a configured Search Provider. `check`
+        marks a Canary Set check rather than a Caller's request, in the request log."""
+        if forced is not None and forced not in self.providers:
+            raise UnknownProvider(
+                f"unknown Search Provider {forced!r}; expected one of: {', '.join(self.providers)}"
+            )
+        outcome = self._search(query, limit, forced)
+        if isinstance(outcome, SearchFailure):
+            served_by = FAILED
+        else:
+            served_by = CACHE if outcome.cached_at is not None else outcome.provider
+        self._requests.record("search", served_by, check=check)
+        return outcome
+
+    def _search(
+        self, query: str, limit: int, forced: str | None
+    ) -> SearchSuccess | SearchFailure:
+        cached = self._cache.get(query, limit) if forced is None else None
         # A cached answer the Source List now blocks entirely is searched again.
         shown = self._present(cached.results, limit, cached.searched_at) if cached else []
         if cached is not None and shown:
@@ -87,18 +140,28 @@ class Searcher:
             )
         attempts: list[ProviderAttempt] = []
         for provider in self._providers:
+            if forced is not None and provider.name != forced:
+                continue
             try:
                 results = provider.search(query, limit)
             except ProviderError as exc:
-                attempts.append(ProviderAttempt(provider.name, str(exc)))
+                attempts.append(ProviderAttempt(provider.name, str(exc), exc.reason))
+                unavailable = exc.reason in (QUOTA_EXHAUSTED, NOT_CONFIGURED)
+                outcome: Outcome = "unavailable" if unavailable else "failure"
+                self._rates.record("provider", provider.name, outcome, exc.reason)
                 continue
             if not results:
-                attempts.append(ProviderAttempt(provider.name, "found no results"))
+                attempts.append(ProviderAttempt(provider.name, "found no results", NO_RESULTS))
+                self._rates.record("provider", provider.name, "failure", NO_RESULTS)
                 continue
+            # The Provider worked, whatever the Source List then makes of its results.
+            self._rates.record("provider", provider.name, "success")
             shown = self._present(results, limit, self._clock())
             if not shown:
                 attempts.append(
-                    ProviderAttempt(provider.name, "found only results from blocked domains")
+                    ProviderAttempt(
+                        provider.name, "found only results from blocked domains", ALL_BLOCKED
+                    )
                 )
                 continue
             self._cache.put(query, limit, results)

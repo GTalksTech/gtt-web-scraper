@@ -20,8 +20,10 @@ services:
       - path: .env
         required: false
     restart: unless-stopped
-    mem_limit: 1g
+    mem_limit: 2g
     cpus: 1.5
+    # Chrome (the Chrome Fetcher) needs more shared memory than Docker's 64 MB default.
+    shm_size: 512m
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:3002/health', timeout=3)"]
       interval: 30s
@@ -32,6 +34,23 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  # SearXNG, the last Search Provider (ADR 0005), as on pi5: the same pinned image
+  # and settings, no published port. The scraper reaches it at http://searxng:8080.
+  searxng:
+    image: docker.io/searxng/searxng:2026.11.21-c6ee3e9fd
+    volumes:
+      - ./deploy/pi5/searxng/settings.yml:/etc/searxng/settings.yml:ro
+    restart: unless-stopped
+    cpus: 0.5
+    mem_limit: 512m
+    memswap_limit: 512m
+    pids_limit: 256
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "2"
 
 volumes:
   cache:

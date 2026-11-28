@@ -5,7 +5,10 @@
 # Pi's Tailscale IPv4. See deploy/pi5/README.md.
 #
 # pi5 is also the tailnet's exit node and subnet router: these limits keep the
-# scraper from ever starving tailscaled of memory or CPU.
+# scraper from ever starving tailscaled of memory or CPU. Chrome (the Chrome
+# Fetcher's Engine) runs inside the container, so its processes, and the shared
+# memory it uses, count against the same caps. SearXNG, the last Search Provider,
+# runs beside it in its own small capped container.
 
 name: gtt-web-scraper
 
@@ -30,11 +33,16 @@ services:
     volumes:
       - cache:/app/data
     restart: unless-stopped
-    # 2 of 4 cores and 2 of 16 GB, no swap beyond that, bounded process count.
+    # 2 of 4 cores and 3 of 16 GB (the service plus Chrome with at most
+    # chrome.max_pages pages open), no swap beyond that, bounded process count
+    # (Chrome's threads count too).
     cpus: 2.0
-    mem_limit: 2g
-    memswap_limit: 2g
-    pids_limit: 512
+    mem_limit: 3g
+    memswap_limit: 3g
+    pids_limit: 1024
+    # Chrome shares page data between its processes through /dev/shm; Docker's
+    # 64 MB default crashes tabs. It is charged to the memory cap above.
+    shm_size: 512m
     # Under host-wide memory pressure the kernel kills the scraper, not tailscaled.
     oom_score_adj: 500
     healthcheck:
@@ -48,6 +56,64 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  # A new image on trial. gtt-up.sh starts it next to the live service, runs the
+  # Canary Set against both from inside it (the live one is http://scraper:3002 on
+  # this project's network), promotes it only if it scores at least as well, and
+  # removes it either way. It publishes no port and has no volume: it never takes
+  # traffic and never touches the live cache or per-site memory.
+  candidate:
+    profiles: [candidate]
+    image: gtt-web-scraper:candidate  # tagged locally by gtt-up.sh, never pulled
+    container_name: gtt-web-scraper-candidate
+    pull_policy: never
+    env_file:
+      - path: .env
+        required: true
+    restart: "no"
+    # Smaller than the live service, so the two together with SearXNG (5 of 16 GB)
+    # still leave tailscaled room. Enough for Chrome with the Canary Set's pages, one
+    # at a time. It asks SearXNG (below) at http://searxng:8080, like the live service.
+    cpus: 1.0
+    mem_limit: 1536m
+    memswap_limit: 1536m
+    pids_limit: 512
+    shm_size: 256m
+    oom_score_adj: 800
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "1"
+
+  # SearXNG, the last Search Provider (ADR 0005): it asks a few upstream search services at once from
+  # the home connection, so search still answers when every free-tier Provider has
+  # failed. The scraper and the candidate reach it at http://searxng:8080 on this
+  # project's network. It publishes no port, so nothing on the tailnet or the LAN
+  # can; it keeps no state, so it has no volume.
+  searxng:
+    # Pinned: a new SearXNG version comes in as a reviewed change to this line (and
+    # the same line in the root docker-compose.yml), never on its own.
+    image: docker.io/searxng/searxng:2026.11.21-c6ee3e9fd
+    container_name: gtt-web-scraper-searxng
+    pull_policy: missing
+    volumes:
+      # Committed settings (JSON output on, a few upstream search services), read-only.
+      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
+    restart: unless-stopped
+    # Half a core and 512 MB: it answers tens of searches a day. With the live
+    # service and the candidate that is 5 of 16 GB, leaving tailscaled its room.
+    cpus: 0.5
+    mem_limit: 512m
+    memswap_limit: 512m
+    pids_limit: 256
+    # Killed before tailscaled, after the scraper (search falls back to the others).
+    oom_score_adj: 600
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "2"
 
 volumes:
   cache:

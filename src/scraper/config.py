@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml
+
+if TYPE_CHECKING:
+    from .fetchers.chrome import Engine
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_PATH = REPO_ROOT / "config" / "scraper.yaml"
@@ -29,6 +33,39 @@ class PaidConfig:
     quota_recheck_s: float = 21600.0
     # From the environment (FIRECRAWL_API_KEY), never from the YAML file.
     api_key: str | None = None
+
+
+@dataclass
+class ChromeConfig:
+    # Real Chrome, in a visible window. On the Pi the window is on a virtual display
+    # (Xvfb, started by the image); headless Chrome is easier for sites to spot.
+    headless: bool = False
+    # The browser profile (cookies, cache, history) kept between pages and restarts, so
+    # the browser looks like a returning visitor. A relative path is from the repo root;
+    # in the container it is in the cache volume.
+    profile_dir: str = "data/chrome-profile"
+    # Timezone and locale the browser reports. They match the home connection, whose
+    # address sites can place.
+    timezone: str = "America/New_York"
+    locale: str = "en-US"
+    # Pages open at once; more requests wait for one to close.
+    max_pages: int = 2
+    # The browser is closed and started again after this many pages, before memory
+    # creeps up.
+    restart_after_pages: int = 50
+    # How long one page may take to load.
+    timeout_s: float = 30.0
+    # After the page has loaded, how long to wait for its scripts to finish fetching.
+    settle_s: float = 5.0
+    # After Chrome fails to start, requests skip it this long before one tries again.
+    start_retry_s: float = 300.0
+    # Makes the Engine the Chrome Fetcher drives. None for real Chrome through
+    # Patchright; tests put a fake here. Never from the YAML file.
+    engine: Callable[[ChromeConfig], Engine] | None = None
+
+    def resolved_profile_dir(self) -> Path:
+        path = Path(self.profile_dir)
+        return path if path.is_absolute() else REPO_ROOT / path
 
 
 @dataclass
@@ -86,7 +123,7 @@ class SearchConfig:
     # Search Providers in the order a query tries them. A failing or out-of-quota
     # Provider passes the query to the next. Firecrawl is never one of them.
     providers: list[str] = field(
-        default_factory=lambda: ["tinyfish", "exa", "tavily", "duckduckgo"]
+        default_factory=lambda: ["tinyfish", "exa", "tavily", "duckduckgo", "searxng"]
     )
     timeout_s: float = 15.0
     # How long a query's results are served from the search cache.
@@ -96,11 +133,28 @@ class SearchConfig:
     exa_url: str = "https://api.exa.ai"
     tavily_url: str = "https://api.tavily.com"
     duckduckgo_url: str = "https://html.duckduckgo.com"
+    # Our own SearXNG container, by its compose service name.
+    searxng_url: str = "http://searxng:8080"
     # From the environment (TINYFISH_API_KEY, EXA_API_KEY, TAVILY_API_KEY), never from
-    # the YAML file. A Provider without its key is skipped. DuckDuckGo needs none.
+    # the YAML file. A Provider without its key is skipped. DuckDuckGo and SearXNG need
+    # none.
     tinyfish_api_key: str | None = None
     exa_api_key: str | None = None
     tavily_api_key: str | None = None
+
+
+@dataclass
+class HealthConfig:
+    # Rolling success rates per Fetcher, Search Provider and Site Adapter are counted
+    # over this window.
+    window_s: float = 86400.0
+    # One with fewer attempts than this in the window isn't judged.
+    min_attempts: int = 10
+    # One whose share of successful attempts falls below this raises an Incident.
+    min_success_rate: float = 0.5
+    # When at least this share of the Canary Set's checks fail, it is one widespread
+    # Incident rather than one per Site, Site Adapter or Search Provider.
+    widespread_fraction: float = 0.5
 
 
 # A domain name: dot-separated labels of letters, digits and hyphens.
@@ -135,6 +189,16 @@ class SourceList:
             raise ValueError(f"Source List has domains both trusted and blocked: {', '.join(both)}")
 
 
+# The Canary Set's file, always beside the config file, for the same reason as the
+# Source List's: a policy check diffs it to catch a removed or loosened entry (ADR 0002).
+CANARY_SET_FILE = "canary.yaml"
+
+
+def config_path() -> Path:
+    """The config file in use: $SCRAPER_CONFIG, or config/scraper.yaml."""
+    return Path(os.environ.get("SCRAPER_CONFIG") or DEFAULT_PATH)
+
+
 # The Source List's file, always beside the config file. It is deliberately not a
 # setting: a policy check diffs this one file to catch a removed domain (ADR 0002), and
 # a setting could point search at a different, shorter list.
@@ -149,8 +213,9 @@ def load_source_list(path: Path) -> SourceList:
 
 @dataclass
 class Config:
-    ladder: list[str] = field(default_factory=lambda: ["plain", "paid"])
+    ladder: list[str] = field(default_factory=lambda: ["plain", "chrome", "paid"])
     plain: PlainConfig = field(default_factory=PlainConfig)
+    chrome: ChromeConfig = field(default_factory=ChromeConfig)
     paid: PaidConfig = field(default_factory=PaidConfig)
     gate: GateConfig = field(default_factory=GateConfig)
     cache: CacheConfig = field(default_factory=CacheConfig)
@@ -158,10 +223,11 @@ class Config:
     adapters: AdaptersConfig = field(default_factory=AdaptersConfig)
     search: SearchConfig = field(default_factory=SearchConfig)
     source_list: SourceList = field(default_factory=SourceList)
+    health: HealthConfig = field(default_factory=HealthConfig)
 
 
 def load_config(path: str | Path | None = None) -> Config:
-    path = Path(path or os.environ.get("SCRAPER_CONFIG") or DEFAULT_PATH)
+    path = Path(path or config_path())
     raw: dict[str, Any] = yaml.safe_load(path.read_text()) or {}
     search = SearchConfig(
         **raw.get("search", {}),
@@ -172,6 +238,7 @@ def load_config(path: str | Path | None = None) -> Config:
     return Config(
         ladder=list(raw.get("ladder", Config().ladder)),
         plain=PlainConfig(**raw.get("plain", {})),
+        chrome=ChromeConfig(**raw.get("chrome", {})),
         paid=PaidConfig(
             **raw.get("paid", {}), api_key=os.environ.get("FIRECRAWL_API_KEY") or None
         ),
@@ -183,4 +250,5 @@ def load_config(path: str | Path | None = None) -> Config:
         ),
         search=search,
         source_list=load_source_list(path.parent / SOURCE_LIST_FILE),
+        health=HealthConfig(**raw.get("health", {})),
     )

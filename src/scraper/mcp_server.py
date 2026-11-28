@@ -78,7 +78,7 @@ def serve_mcp(app: FastAPI, server: FastMCP) -> None:
 
 
 def add_fetch_tool(server: FastMCP, router: Router) -> None:
-    fetchers = ", ".join(router.fetchers)
+    fetchers = ", ".join(router.fetchers + router.site_adapters)
 
     @server.tool(
         title="Fetch a web page",
@@ -100,7 +100,8 @@ def add_fetch_tool(server: FastMCP, router: Router) -> None:
             str | None,
             Field(
                 description=(
-                    f"Force a live fetch to use only this Fetcher, one of: {fetchers}. "
+                    "Force a live fetch to use only this Fetcher or Site Adapter, one of: "
+                    f"{fetchers}. "
                     "Omit to climb the Ladder, cheapest first. A cached copy is still served."
                 ),
             ),

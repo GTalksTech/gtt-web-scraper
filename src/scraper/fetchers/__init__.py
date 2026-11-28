@@ -14,13 +14,15 @@ class FetchError(Exception):
 # Why a Fetcher is unavailable; shown as the reason on its attempt.
 QUOTA_EXHAUSTED = "quota_exhausted"
 NOT_CONFIGURED = "not_configured"
+# The Chrome Fetcher's browser couldn't start (Chrome missing, no display).
+ENGINE_UNAVAILABLE = "engine_unavailable"
 # Not tried because the site is on a cool-down after blocking the home connection.
 COOLING_DOWN = "cooling_down"
 
 
 class FetcherUnavailable(FetchError):
     """The Fetcher can't be used at all right now (e.g. the Paid Fetcher's quota is
-    exhausted), so it wasn't tried. `reason` is one of the reasons above; the message
+    exhausted, or Chrome won't start), so it wasn't tried. `reason` is one of the reasons above; the message
     is for the Caller."""
 
     def __init__(self, reason: str, message: str) -> None:

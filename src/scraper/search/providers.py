@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Protocol
+from urllib.parse import urlsplit
 
 from curl_cffi import requests as curl
 from curl_cffi.requests.exceptions import RequestException
@@ -16,6 +17,8 @@ from ddgs.engines.duckduckgo import Duckduckgo
 from ddgs.exceptions import DDGSException
 
 from ..config import SearchConfig
+# The same reason a Fetcher gives, so one Incident kind covers both.
+from ..fetchers import QUOTA_EXHAUSTED
 
 
 @dataclass(frozen=True)
@@ -30,8 +33,19 @@ class SearchResult:
     published: str | None = None
 
 
+# Why a Provider gave nothing, as its success rate records it. A Provider whose quota
+# is used up, or whose key isn't set, is unavailable rather than failing.
+PROVIDER_ERROR = "provider_error"
+RATE_LIMITED = "rate_limited"
+NOT_CONFIGURED = "not_configured"
+
+
 class ProviderError(Exception):
     """The Provider gave no results to use. The message is for the Caller."""
+
+    def __init__(self, message: str, reason: str = PROVIDER_ERROR) -> None:
+        super().__init__(message)
+        self.reason = reason
 
 
 class SearchProvider(Protocol):
@@ -41,7 +55,7 @@ class SearchProvider(Protocol):
 
 
 class _HttpProvider:
-    """A Provider reached over its JSON API with a key."""
+    """A Provider reached over its JSON API, with a key except for our own SearXNG."""
 
     name: str
     key_env: str
@@ -55,7 +69,7 @@ class _HttpProvider:
 
     def _key(self) -> str:
         if not self._api_key:
-            raise ProviderError(f"not configured: {self.key_env} is not set")
+            raise ProviderError(f"not configured: {self.key_env} is not set", NOT_CONFIGURED)
         return self._api_key
 
     def _call(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
@@ -70,7 +84,10 @@ class _HttpProvider:
             raise ProviderError(f"unreachable: {exc}") from exc
         status = response.status_code
         if status in self.quota_statuses:
-            raise ProviderError(f"quota exhausted or rate-limited (HTTP {status})")
+            # A 429 can be a per-minute limit that passes on its own, so it counts as a
+            # failure; only the other statuses say the quota or credits are used up.
+            reason = RATE_LIMITED if status == 429 else QUOTA_EXHAUSTED
+            raise ProviderError(f"quota exhausted or rate-limited (HTTP {status})", reason)
         if status != 200:
             raise ProviderError(f"answered HTTP {status}: {response.text[:200]}")
         try:
@@ -190,7 +207,7 @@ class _DuckDuckGoPage(Duckduckgo):
     def request(self, *args: Any, **kwargs: Any) -> Any:
         response = self.http_client.request(*args, **kwargs)
         if response.status_code in (202, 429):
-            raise ProviderError(f"rate-limited (HTTP {response.status_code})")
+            raise ProviderError(f"rate-limited (HTTP {response.status_code})", RATE_LIMITED)
         if response.status_code != 200:
             raise ProviderError(f"answered HTTP {response.status_code}")
         return response.text
@@ -220,6 +237,52 @@ class DuckDuckGo:
         ][:limit]
 
 
+def _absolute_http(url: str) -> bool:
+    parts = urlsplit(url)
+    return parts.scheme in ("http", "https") and bool(parts.hostname)
+
+
+class SearXNG(_HttpProvider):
+    """Our own SearXNG instance, a container next to the service (ADR 0005), which asks
+    several upstream search services at once. docs.searxng.org/dev/search_api: GET /search?q=…&format=json,
+    no key; one page is about ten to thirty results, with no count parameter. Its
+    settings (deploy/pi5/searxng/settings.yml) must enable the JSON format, or it answers
+    403."""
+
+    name = "searxng"
+    key_env = ""
+    # Only with its limiter on, which our settings turn off.
+    quota_statuses = (429,)
+
+    def search(self, query: str, limit: int) -> list[SearchResult]:
+        body = self._call("GET", "/search", params={"q": query, "format": "json"})
+        found = [
+            SearchResult(
+                title=str(r.get("title") or ""),
+                url=str(r["url"]),
+                snippet=str(r.get("content") or ""),
+                provider=self.name,
+                published=r.get("publishedDate") or None,
+            )
+            for r in _results(body)
+            # An upstream service's redirect link SearXNG couldn't resolve ("http:///go/…") has
+            # no host; it would lead a Caller nowhere.
+            if _absolute_http(str(r["url"]))
+        ]
+        if not found:
+            # An upstream service that blocked SearXNG (a CAPTCHA, a rate limit) is listed
+            # here (SearXNG calls them engines) rather than raising. Every one of them
+            # down is a failure, not an empty answer.
+            down = [
+                f"{e[0]} ({e[1]})" if len(e) > 1 and e[1] else str(e[0])
+                for e in body.get("unresponsive_engines") or []
+                if isinstance(e, list) and e
+            ]
+            if down:
+                raise ProviderError(f"every upstream search service failed: {', '.join(down)}")
+        return found[:limit]
+
+
 def build_providers(config: SearchConfig) -> list[SearchProvider]:
     """The Search Providers named in config, in order."""
     available: dict[str, SearchProvider] = {
@@ -227,6 +290,7 @@ def build_providers(config: SearchConfig) -> list[SearchProvider]:
         "exa": Exa(config.exa_url, config.exa_api_key, config.timeout_s),
         "tavily": Tavily(config.tavily_url, config.tavily_api_key, config.timeout_s),
         "duckduckgo": DuckDuckGo(config.duckduckgo_url, config.timeout_s),
+        "searxng": SearXNG(config.searxng_url, None, config.timeout_s),
     }
     unknown = [name for name in config.providers if name not in available]
     if unknown:

@@ -6,6 +6,8 @@
 ladder:
   # Fetchers in the order a request climbs them, cheapest first.
   - plain
+  # Real Chrome, for pages the plain download rejects (JavaScript apps, mostly).
+  - chrome
   # The Paid Fetcher (Firecrawl) is always last: it spends quota. Its key comes from
   # FIRECRAWL_API_KEY in .env, never from this file.
   - paid
@@ -14,6 +16,30 @@ plain:
   # Browser whose network signature (TLS, HTTP/2, headers) the plain download imitates.
   impersonate: chrome
   timeout_s: 20
+
+chrome:
+  # Real Chrome for ARM64 driven by Patchright, in a visible window on the image's
+  # virtual display (Xvfb): headless Chrome is easier for sites to spot. It uses the
+  # home connection, so sites.min_interval_s and cool-downs apply to it like the plain
+  # download.
+  headless: false
+  # Kept between pages and restarts (in the cache volume), so Chrome looks like a
+  # returning visitor rather than a fresh install every time.
+  profile_dir: data/chrome-profile
+  # What the browser reports, matching the home connection (sites can place its address).
+  timezone: America/New_York
+  locale: en-US
+  # Pages open at once; more requests wait their turn. Each page costs a few hundred MB,
+  # and the container's memory cap (deploy/pi5/compose.yml) protects tailscaled.
+  max_pages: 2
+  # Chrome is closed and started again after this many pages, before its memory creeps up.
+  restart_after_pages: 50
+  # How long one page may take to load, then how long its scripts get to finish fetching.
+  timeout_s: 30
+  settle_s: 5
+  # When Chrome won't start, the Chrome Fetcher is unavailable and requests go on to the
+  # Paid Fetcher; one request tries starting it again after this long.
+  start_retry_s: 300
 
 paid:
   base_url: https://api.firecrawl.dev
@@ -79,12 +105,16 @@ search:
   # one fails, the Caller gets an explicit failure naming each Provider's error. Re-order
   # or replace Providers here. Firecrawl is never a Search Provider (it spends quota).
   # Keys come from TINYFISH_API_KEY, EXA_API_KEY and TAVILY_API_KEY in .env; DuckDuckGo
-  # needs none.
+  # and SearXNG need none.
   providers:
     - tinyfish
     - exa
     - tavily
     - duckduckgo
+    # Our own SearXNG container (deploy/pi5/compose.yml), the last resort: it asks
+    # several upstream search services at once from the home connection and keeps answering when one
+    # blocks it. Free and keyless; ADR 0005 says why it is here.
+    - searxng
   timeout_s: 15
   # A query's results are served from the search cache for this long (24 hours), so
   # repeated searches don't spend free Provider quota.
@@ -97,3 +127,25 @@ search:
   exa_url: https://api.exa.ai
   tavily_url: https://api.tavily.com
   duckduckgo_url: https://html.duckduckgo.com
+  # The searxng service on the compose network; nothing outside it can reach SearXNG.
+  searxng_url: http://searxng:8080
+
+health:
+  # Rolling success rates per Fetcher, Search Provider and Site Adapter, counted over
+  # this window (24 hours); see them at /health/fetchers, /health/providers and
+  # /health/adapters. Attempts skipped for a cool-down, and searches served from the
+  # cache, aren't counted; ones refused because a Fetcher or Provider is unavailable
+  # (quota exhausted, or a Provider's key not set) are counted apart, and a quota
+  # running out raises its own Incident.
+  window_s: 86400
+  # A Fetcher, Provider or adapter with fewer attempts than this in the window isn't judged.
+  min_attempts: 10
+  # One whose share of successful attempts falls below this raises an Incident. The
+  # plain download is rejected on hard sites as a matter of course, and a Provider that
+  # finds nothing counts as failing, so this is a floor for a quiet slide, not a
+  # target. Lowering it loosens a check and needs Garrett's approval (ADR 0002).
+  min_success_rate: 0.5
+  # When at least this share of the Canary Set's checks (pages and searches) fails at
+  # once, it's one widespread Incident instead of one per site, Site Adapter or Search
+  # Provider. The Canary Set itself is config/canary.yaml.
+  widespread_fraction: 0.5

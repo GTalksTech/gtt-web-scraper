@@ -6,7 +6,8 @@
 #   sudo ~/gtt-web-scraper/install.sh
 #
 # Checks the Pi can enforce the limits, then installs the boot unit, the
-# 10-minute update timer and the hardware watchdog, and starts the service.
+# 10-minute update timer, the daily Canary Set timer and the hardware watchdog,
+# and starts the service.
 # Safe to re-run (that's also how changed units or compose.yml take effect).
 
 set -euo pipefail
@@ -28,6 +29,11 @@ echo "Checking pi5 is ready"
 command -v docker > /dev/null || die "Docker isn't installed. See 'Install Docker' in deploy/pi5/README.md."
 docker compose version > /dev/null 2>&1 || die "the Docker Compose plugin is missing: sudo apt-get install docker-compose-plugin"
 ok "Docker and Compose installed"
+
+for tool in curl jq; do
+  command -v "$tool" > /dev/null || die "$tool is missing (gtt-report.sh needs it to send Incidents to GitHub): sudo apt-get install $tool"
+done
+ok "curl and jq installed"
 
 command -v tailscale > /dev/null || die "Tailscale isn't installed on this machine"
 ip="$(tailscale ip -4 2>/dev/null | head -n1 || true)"
@@ -53,9 +59,10 @@ fi
 ok "hardware watchdog present"
 
 echo "Installing"
-chmod 0755 "$DIR/gtt-up.sh"
+chmod 0755 "$DIR/gtt-up.sh" "$DIR/gtt-canary.sh" "$DIR/gtt-report.sh"
 mkdir -p "$ETC/systemd/system" "$ETC/systemd/system.conf.d"
-for unit in gtt-web-scraper.service gtt-web-scraper-update.service gtt-web-scraper-update.timer; do
+for unit in gtt-web-scraper.service gtt-web-scraper-update.service gtt-web-scraper-update.timer \
+            gtt-canary.service gtt-canary.timer; do
   sed "s|@DIR@|$DIR|g" "$DIR/systemd/$unit" > "$ETC/systemd/system/$unit"
   chmod 0644 "$ETC/systemd/system/$unit"
 done
@@ -66,14 +73,14 @@ systemctl daemon-reexec
 ok "hardware watchdog on ($(systemctl show --property=RuntimeWatchdogUSec | cut -d= -f2))"
 
 echo "Starting (the first pull of the image can take a few minutes)"
-systemctl enable --now gtt-web-scraper.service gtt-web-scraper-update.timer \
+systemctl enable --now gtt-web-scraper.service gtt-web-scraper-update.timer gtt-canary.timer \
   || die "the first deploy failed; systemd keeps retrying every 30 s. See why with:
   journalctl -u gtt-web-scraper -n 30
   Most likely the image isn't public on GHCR yet (deploy/pi5/README.md, step 2)."
 # enable --now does nothing for a service already active: run one deploy pass
 # so a re-install applies a changed compose.yml straight away, without downtime.
 systemctl start gtt-web-scraper-update.service
-ok "service and update timer enabled"
+ok "service, update timer and daily Canary Set enabled"
 
 echo
 echo "Published ports (should be $ip:3002 only):"
