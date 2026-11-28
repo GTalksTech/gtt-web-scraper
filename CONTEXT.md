@@ -45,7 +45,7 @@ _Avoid_: plugin, special case, scraper rule
 ### Searching
 
 **Search Provider**:
-One external search service that answers a query with a ranked list of results. Providers are tried in order; a failing Provider passes the query to the next.
+One external search service that answers a query with a ranked list of results. Providers are tried in order; a failing Provider passes the query to the next. A Provider may itself ask several **upstream search services** (our SearXNG asks Google, Bing, DuckDuckGo and Brave); those are neither Providers nor Engines.
 _Avoid_: search engine, search backend
 
 **Source List**:

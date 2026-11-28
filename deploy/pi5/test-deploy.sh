@@ -170,6 +170,7 @@ case "$*" in
   "compose pull"*) [[ -e "$FAKE/pull_fails" ]] && exit 1; cp "$FAKE/remote" "$FAKE/tagged" ;;
   "compose --profile candidate up"*) [[ -e "$FAKE/candidate_fails" ]] && exit 1; true ;;
   "compose --profile candidate"*) true ;;
+  "compose up -d --no-deps searxng") true ;;  # SearXNG alone: the scraper is untouched
   "compose up"*)   [[ -e "$FAKE/up_fails" ]] && exit 1; [[ -e "$FAKE/tagged" ]] && cp "$FAKE/tagged" "$FAKE/running"; true ;;
   "image inspect --format {{.Id}} $MAIN") cat "$FAKE/tagged" 2>/dev/null || exit 1 ;;
   "tag "*" $MAIN") echo "$2" > "$FAKE/tagged" ;;
@@ -230,7 +231,7 @@ ran_after() { local a b; a=$(grep -n "^$1" "$FAKE/docker.log" | head -1 | cut -d
 echo "gtt-up.sh"
 reset_fakes
 check "a new image deploys" up
-check "pulls, then brings the service up" ran_before "compose pull" "compose up -d"
+check "pulls, then brings the service up" ran_before "compose pull" "compose up -d --remove-orphans"
 check "compose sees the Pi's tailnet IP" grep -q "^compose up -d.*TAILNET_IP=100.64.0.5$" "$FAKE/docker.log"
 check "the new image is running" test "$(cat "$FAKE/running")" = "sha256:new"
 check "logs the deploy, old and new image" grep -q "sha256:old.*sha256:new\|sha256:new.*sha256:old" "$FAKE/out.log"
@@ -248,7 +249,7 @@ check "no tailnet IP: never starts the service" fails grep -qs "^compose up" "$F
 reset_fakes; touch "$FAKE/pull_fails"
 check "registry unreachable: still succeeds (the service is up)" up
 check "registry unreachable: warns in the journal" grep -q "warning: pulling from GHCR failed" "$FAKE/out.log"
-check "registry unreachable: still brings up the image it has" ran "compose up -d"
+check "registry unreachable: still brings up the image it has" ran "compose up -d --remove-orphans"
 check "registry unreachable: keeps the old image" test "$(cat "$FAKE/running")" = "sha256:old"
 
 reset_fakes; touch "$FAKE/up_fails"
@@ -266,8 +267,10 @@ echo "gtt-up.sh: deploys gated by the Canary Set"
 reset_fakes
 up
 check "a new image runs as the candidate before it takes traffic" \
-  ran_before "compose --profile candidate up -d --no-deps candidate" "compose up -d"
+  ran_before "compose --profile candidate up -d --no-deps candidate" "compose up -d --remove-orphans"
 check "  the candidate is the newly pulled image" ran "tag sha256:new gtt-web-scraper:candidate"
+check "  SearXNG is started first, so the candidate's Canary searches reach it" \
+  ran_before "compose up -d --no-deps searxng" "compose --profile candidate up -d --no-deps candidate"
 check "  the Canary Set runs in it against the live service and itself" \
   ran "exec gtt-web-scraper-candidate python -m scraper.health deploy --live http://scraper:3002 --candidate http://127.0.0.1:3002 --candidate-image sha256:new|"
 check "  and the candidate is removed afterwards" \

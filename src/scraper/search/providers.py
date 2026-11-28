@@ -244,7 +244,7 @@ def _absolute_http(url: str) -> bool:
 
 class SearXNG(_HttpProvider):
     """Our own SearXNG instance, a container next to the service (ADR 0005), which asks
-    several engines at once. docs.searxng.org/dev/search_api: GET /search?q=…&format=json,
+    several upstream search services at once. docs.searxng.org/dev/search_api: GET /search?q=…&format=json,
     no key; one page is about ten to thirty results, with no count parameter. Its
     settings (deploy/pi5/searxng/settings.yml) must enable the JSON format, or it answers
     403."""
@@ -265,20 +265,21 @@ class SearXNG(_HttpProvider):
                 published=r.get("publishedDate") or None,
             )
             for r in _results(body)
-            # An engine's redirect link SearXNG couldn't resolve ("http:///go/…") has
+            # An upstream service's redirect link SearXNG couldn't resolve ("http:///go/…") has
             # no host; it would lead a Caller nowhere.
             if _absolute_http(str(r["url"]))
         ]
         if not found:
-            # An engine that blocked SearXNG (a CAPTCHA, a rate limit) is listed here
-            # rather than raising. Every engine down is a failure, not an empty answer.
+            # An upstream service that blocked SearXNG (a CAPTCHA, a rate limit) is listed
+            # here (SearXNG calls them engines) rather than raising. Every one of them
+            # down is a failure, not an empty answer.
             down = [
                 f"{e[0]} ({e[1]})" if len(e) > 1 and e[1] else str(e[0])
                 for e in body.get("unresponsive_engines") or []
                 if isinstance(e, list) and e
             ]
             if down:
-                raise ProviderError(f"every engine failed: {', '.join(down)}")
+                raise ProviderError(f"every upstream search service failed: {', '.join(down)}")
         return found[:limit]
 
 

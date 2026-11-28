@@ -112,7 +112,7 @@ search:
     - tavily
     - duckduckgo
     # Our own SearXNG container (deploy/pi5/compose.yml), the last resort: it asks
-    # several engines at once from the home connection and keeps answering when one
+    # several upstream search services at once from the home connection and keeps answering when one
     # blocks it. Free and keyless; ADR 0005 says why it is here.
     - searxng
   timeout_s: 15

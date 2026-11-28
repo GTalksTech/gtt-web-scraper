@@ -7,7 +7,8 @@
 
 use_default_settings:
   engines:
-    # A few general web engines, so one blocking the home connection leaves the
+    # A few general web search services (SearXNG's "engines"; not the scraper's
+    # browser Engine, CONTEXT.md), so one blocking the home connection leaves the
     # others. Each costs one outgoing request per search, so keep the list short.
     # (Wikipedia is left out: SearXNG shows it only as an infobox, which the scraper
     # doesn't read, and the general engines find Wikipedia pages anyway.)

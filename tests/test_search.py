@@ -169,7 +169,7 @@ def test_every_provider_failing_is_an_explicit_failure_naming_each_error(
     assert "exa: quota exhausted or rate-limited (HTTP 402)" in error
     assert "tavily: quota exhausted or rate-limited (HTTP 432)" in error
     assert "duckduckgo: rate-limited (HTTP 202)" in error
-    assert "searxng: every engine failed: bing (Suspended: too many requests)" in error
+    assert "searxng: every upstream search service failed: bing (Suspended: too many requests)" in error
 
 
 def test_results_are_cached_for_24_hours(
@@ -368,7 +368,7 @@ def test_searxng_failing_too_is_an_explicit_failure_naming_it(
     assert "searxng: answered HTTP 500" in body["error"]
 
 
-def test_searxng_whose_engines_all_block_it_names_each_engine(
+def test_searxng_whose_upstream_services_all_block_it_names_each(
     client: TestClient, providers: FakeSearchProviders
 ) -> None:
     for name in FREE_TIER:
@@ -380,8 +380,8 @@ def test_searxng_whose_engines_all_block_it_names_each_engine(
     assert status == 502
     assert body["attempts"][-1] == {
         "provider": "searxng",
-        "error": "every engine failed: bing (Suspended: too many requests), "
-        "brave (timeout), google (Suspended: CAPTCHA)",
+        "error": "every upstream search service failed: "
+        "bing (Suspended: too many requests), brave (timeout), google (Suspended: CAPTCHA)",
         "reason": "provider_error",
     }
 
@@ -389,7 +389,7 @@ def test_searxng_whose_engines_all_block_it_names_each_engine(
 def test_searxng_results_without_a_usable_url_are_dropped(
     client: TestClient, providers: FakeSearchProviders
 ) -> None:
-    # Seen from the real SearXNG: an engine's redirect link it couldn't resolve.
+    # Seen from the real SearXNG: an upstream service's redirect link it couldn't resolve.
     for name in FREE_TIER:
         providers.fail(name)
     providers.answer(

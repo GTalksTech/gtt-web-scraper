@@ -12,7 +12,7 @@ Provider's real wire format (checked against each Provider's docs, 2026-11):
 
 A test tells each Provider to answer with results, fail (HTTP 500) or report an
 exhausted quota the way that Provider does, and reads back every query it received.
-SearXNG has no quota: run_out("searxng") makes every engine behind it block it, which
+SearXNG has no quota: run_out("searxng") makes every upstream search service behind it block it, which
 it reports as no results plus a list of unresponsive engines.
 """
 
@@ -32,7 +32,7 @@ KEYS = {"tinyfish": "tf-test-key", "exa": "exa-test-key", "tavily": "tvly-test-k
 # How each Provider says its free allowance or credits are used up.
 QUOTA_STATUS = {"tinyfish": 429, "exa": 402, "tavily": 432, "duckduckgo": 202}
 
-# What SearXNG says when every engine it asks blocks it: [engine, reason] pairs, sorted
+# What SearXNG says when every upstream search service it asks blocks it: [engine, reason] pairs, sorted
 # by engine, as searx/webutils.py get_translated_errors writes them.
 SEARXNG_BLOCKED = [
     ["bing", "Suspended: too many requests"],

@@ -86,7 +86,7 @@ services:
         max-size: "10m"
         max-file: "1"
 
-  # SearXNG, the last Search Provider (ADR 0005): it asks a few engines at once from
+  # SearXNG, the last Search Provider (ADR 0005): it asks a few upstream search services at once from
   # the home connection, so search still answers when every free-tier Provider has
   # failed. The scraper and the candidate reach it at http://searxng:8080 on this
   # project's network. It publishes no port, so nothing on the tailnet or the LAN
@@ -98,7 +98,7 @@ services:
     container_name: gtt-web-scraper-searxng
     pull_policy: missing
     volumes:
-      # Committed settings (JSON output on, a few engines), read-only.
+      # Committed settings (JSON output on, a few upstream search services), read-only.
       - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
     restart: unless-stopped
     # Half a core and 512 MB: it answers tens of searches a day. With the live
