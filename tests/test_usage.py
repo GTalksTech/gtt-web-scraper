@@ -93,7 +93,7 @@ def test_search_requests_are_counted_by_what_served_them(
     providers.fail("tinyfish")
     search_v2(client, "raspberry pi 5 thermals")  # Exa, after TinyFish failed
     search_v2(client, "raspberry pi 5 thermals")  # the cache
-    for name in ("exa", "tavily", "duckduckgo"):
+    for name in ("exa", "tavily", "duckduckgo", "searxng"):
         providers.fail(name)
     search_v2(client, "something else")  # every Provider failed
 

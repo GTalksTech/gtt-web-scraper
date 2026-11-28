@@ -8,10 +8,10 @@ from typing import Any
 from fastapi.testclient import TestClient
 
 from scraper.api import create_app
-from scraper.config import Config
+from scraper.config import Config, SourceList, load_config
 
 from .fakefirecrawl import FakeFirecrawl
-from .fakesearch import FakeSearchProviders, Hit, hits
+from .fakesearch import PROVIDERS, FakeSearchProviders, Hit, hits
 
 
 def search_v2(client: TestClient, query: str, **extra: Any) -> tuple[int, dict[str, Any]]:
@@ -148,6 +148,7 @@ def test_every_provider_failing_is_an_explicit_failure_naming_each_error(
     providers.run_out("exa")
     providers.run_out("tavily")
     providers.run_out("duckduckgo")
+    providers.run_out("searxng")
 
     status, body = search_v2(client, "pi 5 nvme boot")
 
@@ -160,6 +161,7 @@ def test_every_provider_failing_is_an_explicit_failure_naming_each_error(
         "exa",
         "tavily",
         "duckduckgo",
+        "searxng",
     ]
     error = body["error"]
     assert "Every Search Provider failed" in error
@@ -167,6 +169,7 @@ def test_every_provider_failing_is_an_explicit_failure_naming_each_error(
     assert "exa: quota exhausted or rate-limited (HTTP 402)" in error
     assert "tavily: quota exhausted or rate-limited (HTTP 432)" in error
     assert "duckduckgo: rate-limited (HTTP 202)" in error
+    assert "searxng: every upstream search service failed: bing (Suspended: too many requests)" in error
 
 
 def test_results_are_cached_for_24_hours(
@@ -218,7 +221,7 @@ def test_a_cached_search_serves_smaller_limits_and_a_larger_one_searches_again(
 def test_a_failed_search_is_not_cached(
     client: TestClient, providers: FakeSearchProviders
 ) -> None:
-    for name in ("tinyfish", "exa", "tavily", "duckduckgo"):
+    for name in PROVIDERS:
         providers.fail(name)
     search_v2(client, "pi 5 nvme boot")
     providers.answer("tinyfish", hits("tinyfish"))
@@ -299,3 +302,178 @@ def test_an_empty_query_is_refused(client: TestClient, providers: FakeSearchProv
 
     assert response.status_code == 422
     assert providers.calls() == []
+
+
+# ── SearXNG: the self-hosted last resort ───────────────────────────────────
+
+FREE_TIER = ("tinyfish", "exa", "tavily", "duckduckgo")
+
+
+def test_searxng_is_last_in_the_configured_order() -> None:
+    assert load_config().search.providers[-1] == "searxng"
+
+
+def test_searxng_answers_when_every_other_provider_has_failed(
+    client: TestClient, providers: FakeSearchProviders
+) -> None:
+    providers.fail("tinyfish")
+    providers.run_out("exa")
+    providers.run_out("tavily")
+    providers.fail("duckduckgo")
+
+    status, body = search_v2(client, "pi 5 nvme boot")
+
+    assert status == 200
+    assert body["provider"] == "searxng"
+    web = body["data"]["web"]
+    assert [r["url"] for r in web] == [
+        "https://example.org/searxng/1",
+        "https://example.org/searxng/2",
+        "https://example.org/searxng/3",
+    ]
+    assert web[0]["title"] == "searxng result 1"
+    assert web[0]["description"] == "What searxng says about result 1."
+    assert web[0]["provider"] == "searxng"
+    assert [a["provider"] for a in body["attempts"]] == list(FREE_TIER)
+    assert providers.calls() == [*FREE_TIER, "searxng"]
+    # Asked for JSON, the only answer the service reads; no key is sent.
+    assert providers.requests["searxng"] == [{"q": "pi 5 nvme boot", "format": "json"}]
+
+
+def test_searxng_is_not_asked_while_an_earlier_provider_answers(
+    client: TestClient, providers: FakeSearchProviders
+) -> None:
+    for name in ("tinyfish", "exa", "tavily"):
+        providers.fail(name)
+
+    status, body = search_v2(client, "pi 5 nvme boot")
+
+    assert status == 200
+    assert body["provider"] == "duckduckgo"
+    assert providers.queries["searxng"] == []
+
+
+def test_searxng_failing_too_is_an_explicit_failure_naming_it(
+    client: TestClient, providers: FakeSearchProviders
+) -> None:
+    for name in PROVIDERS:
+        providers.fail(name)
+
+    status, body = search_v2(client, "pi 5 nvme boot")
+
+    assert status == 502
+    assert body["code"] == "SEARCH_FAILED"
+    assert [a["provider"] for a in body["attempts"]] == [*FREE_TIER, "searxng"]
+    assert body["attempts"][-1]["reason"] == "provider_error"
+    assert "searxng: answered HTTP 500" in body["error"]
+
+
+def test_searxng_whose_upstream_services_all_block_it_names_each(
+    client: TestClient, providers: FakeSearchProviders
+) -> None:
+    for name in FREE_TIER:
+        providers.fail(name)
+    providers.run_out("searxng")
+
+    status, body = search_v2(client, "pi 5 nvme boot")
+
+    assert status == 502
+    assert body["attempts"][-1] == {
+        "provider": "searxng",
+        "error": "every upstream search service failed: "
+        "bing (Suspended: too many requests), brave (timeout), google (Suspended: CAPTCHA)",
+        "reason": "provider_error",
+    }
+
+
+def test_searxng_results_without_a_usable_url_are_dropped(
+    client: TestClient, providers: FakeSearchProviders
+) -> None:
+    # Seen from the real SearXNG: an upstream service's redirect link it couldn't resolve.
+    for name in FREE_TIER:
+        providers.fail(name)
+    providers.answer(
+        "searxng",
+        [
+            Hit("Broken", "http:///go/v1/AV3PJ5vjNPk3", "A redirect."),
+            Hit("Relative", "/url?q=x", "Relative."),
+            Hit("Docs", "https://git-scm.com/docs/git-rebase", "Docs."),
+        ],
+    )
+
+    status, body = search_v2(client, "git rebase documentation")
+
+    assert status == 200
+    assert [r["url"] for r in body["data"]["web"]] == ["https://git-scm.com/docs/git-rebase"]
+
+
+def test_searxng_finding_nothing_is_no_results(
+    client: TestClient, providers: FakeSearchProviders
+) -> None:
+    for name in FREE_TIER:
+        providers.fail(name)
+    providers.answer("searxng", [])
+
+    status, body = search_v2(client, "an obscure query")
+
+    assert status == 502
+    assert body["attempts"][-1] == {
+        "provider": "searxng",
+        "error": "found no results",
+        "reason": "no_results",
+    }
+
+
+def test_searxng_unreachable_is_a_failure(
+    config: Config, providers: FakeSearchProviders
+) -> None:
+    # Its container is down: nothing listens where the scraper expects it.
+    config.search.searxng_url = "http://127.0.0.1:9"
+    client = TestClient(create_app(config))
+    for name in FREE_TIER:
+        providers.fail(name)
+
+    status, body = search_v2(client, "pi 5 nvme boot")
+
+    assert status == 502
+    assert body["attempts"][-1]["provider"] == "searxng"
+    assert body["attempts"][-1]["error"].startswith("unreachable")
+
+
+def test_searxng_results_are_limited_ranked_and_cached(
+    config: Config, providers: FakeSearchProviders
+) -> None:
+    config.source_list = SourceList(trusted=["python.org"], blocked=["contentfarm.example"])
+    client = TestClient(create_app(config))
+    for name in FREE_TIER:
+        providers.fail(name)
+    providers.answer(
+        "searxng",
+        [
+            Hit("Farm", "https://contentfarm.example/pi", "Spam."),
+            Hit("Other", "https://example.org/pi", "Fine."),
+            Hit("Docs", "https://docs.python.org/3/", "Docs."),
+            *hits("searxng", 20),
+        ],
+    )
+
+    _, first = search_v2(client, "pi 5 nvme boot", limit=3)
+    _, again = search_v2(client, "pi 5 nvme boot", limit=3)
+
+    # Its first three, trusted first and the blocked one dropped, as for any Provider.
+    assert [r["url"] for r in first["data"]["web"]] == [
+        "https://docs.python.org/3/",
+        "https://example.org/pi",
+    ]
+    assert again["cacheState"] == "hit"
+    assert again["provider"] == "searxng"
+    assert again["data"] == first["data"]
+    assert len(providers.queries["searxng"]) == 1
+
+
+def test_searxng_can_be_forced(client: TestClient, providers: FakeSearchProviders) -> None:
+    status, body = search_v2(client, "pi 5 nvme boot", provider="searxng")
+
+    assert status == 200
+    assert body["provider"] == "searxng"
+    assert providers.calls() == ["searxng"]

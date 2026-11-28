@@ -35,5 +35,22 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # SearXNG, the last Search Provider (ADR 0005), as on pi5: the same pinned image
+  # and settings, no published port. The scraper reaches it at http://searxng:8080.
+  searxng:
+    image: docker.io/searxng/searxng:2026.11.21-c6ee3e9fd
+    volumes:
+      - ./deploy/pi5/searxng/settings.yml:/etc/searxng/settings.yml:ro
+    restart: unless-stopped
+    cpus: 0.5
+    mem_limit: 512m
+    memswap_limit: 512m
+    pids_limit: 256
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "2"
+
 volumes:
   cache:

@@ -1,15 +1,19 @@
 """Seam 1: local fake Search Providers that the search chain calls instead of the real ones.
 
-One server stands in for all four, each under its own path prefix, speaking that
+One server stands in for all five, each under its own path prefix, speaking that
 Provider's real wire format (checked against each Provider's docs, 2026-11):
 
 - TinyFish: GET /tinyfish/?query=… with X-API-Key; {"results": [{title, url, snippet, date?}]}
 - Exa: POST /exa/search with x-api-key; {"results": [{title, url, publishedDate, highlights}]}
 - Tavily: POST /tavily/search with Authorization: Bearer; {"results": [{title, url, content, published_date?}]}
 - DuckDuckGo: POST /duckduckgo/html/ (form q=…); the HTML results page ddgs parses.
+- SearXNG: GET /searxng/search?q=…&format=json, no key; {"results": [{title, url,
+  content, publishedDate}], "unresponsive_engines": [[engine, reason], …]}.
 
 A test tells each Provider to answer with results, fail (HTTP 500) or report an
 exhausted quota the way that Provider does, and reads back every query it received.
+SearXNG has no quota: run_out("searxng") makes every upstream search service behind it block it, which
+it reports as no results plus a list of unresponsive engines.
 """
 
 from __future__ import annotations
@@ -22,11 +26,19 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Literal
 from urllib.parse import parse_qs, urlsplit
 
-PROVIDERS = ("tinyfish", "exa", "tavily", "duckduckgo")
+PROVIDERS = ("tinyfish", "exa", "tavily", "duckduckgo", "searxng")
 KEYS = {"tinyfish": "tf-test-key", "exa": "exa-test-key", "tavily": "tvly-test-key"}
 
 # How each Provider says its free allowance or credits are used up.
 QUOTA_STATUS = {"tinyfish": 429, "exa": 402, "tavily": 432, "duckduckgo": 202}
+
+# What SearXNG says when every upstream search service it asks blocks it: [engine, reason] pairs, sorted
+# by engine, as searx/webutils.py get_translated_errors writes them.
+SEARXNG_BLOCKED = [
+    ["bing", "Suspended: too many requests"],
+    ["brave", "timeout"],
+    ["google", "Suspended: CAPTCHA"],
+]
 
 Mode = Literal["results", "fail", "quota"]
 
@@ -107,6 +119,8 @@ class FakeSearchProviders:
         if mode == "fail":
             return 500, "application/json", b'{"error": "internal error"}'
         if mode == "quota":
+            if provider == "searxng":
+                return 200, "application/json", _searxng_body(query, [], SEARXNG_BLOCKED)
             if provider == "duckduckgo":
                 # DuckDuckGo's rate limit is a 202 with an empty challenge page.
                 return 202, "text/html", b"<html><body></body></html>"
@@ -133,6 +147,8 @@ class FakeSearchProviders:
                 "total_results": len(results),
                 "page": 0,
             }
+        elif provider == "searxng":
+            return 200, "application/json", _searxng_body(query, results, [])
         elif provider == "exa":
             body = {
                 "requestId": "fake",
@@ -171,9 +187,15 @@ class FakeSearchProviders:
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self) -> None:  # noqa: N802 (stdlib name)
                 parts = urlsplit(self.path)
+                params = {k: v[0] for k, v in parse_qs(parts.query).items()}
+                if parts.path == "/searxng/search":
+                    fake.requests["searxng"].append(dict(params))
+                    if params.get("format") != "json":
+                        # SearXNG refuses a format its settings don't enable.
+                        return self._send(403, "text/html", b"<h1>403 Forbidden</h1>")
+                    return self._send(*fake._respond("searxng", params.get("q", ""), True))
                 if parts.path.rstrip("/") != "/tinyfish":
                     return self._send(404, "text/plain", b"no such endpoint")
-                params = {k: v[0] for k, v in parse_qs(parts.query).items()}
                 fake.requests["tinyfish"].append(dict(params))
                 auth_ok = self.headers.get("X-API-Key") == KEYS["tinyfish"]
                 self._send(*fake._respond("tinyfish", params.get("query", ""), auth_ok))
@@ -209,6 +231,34 @@ class FakeSearchProviders:
                 pass
 
         return Handler
+
+
+def _searxng_body(query: str, results: list[Hit], unresponsive: list[list[str]]) -> bytes:
+    """SearXNG's /search?format=json answer (searx/webutils.py get_json_response).
+    publishedDate is ISO 8601 without a zone, or null."""
+    return json.dumps(
+        {
+            "query": query,
+            "results": [
+                {
+                    "url": h.url,
+                    "title": h.title,
+                    "content": h.snippet,
+                    "publishedDate": h.date,
+                    "engine": "google",
+                    "engines": ["google", "brave"],
+                    "score": 2.0,
+                    "category": "general",
+                }
+                for h in results
+            ],
+            "answers": [],
+            "corrections": [],
+            "infoboxes": [],
+            "suggestions": [],
+            "unresponsive_engines": unresponsive,
+        }
+    ).encode()
 
 
 def _ddg_page(results: list[Hit]) -> str:

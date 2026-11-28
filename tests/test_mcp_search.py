@@ -98,6 +98,7 @@ def test_every_provider_failing_is_a_tool_error_naming_each_provider(
     for name in ("tinyfish", "exa", "tavily"):
         providers.run_out(name)
     providers.fail("duckduckgo")
+    providers.fail("searxng")
 
     result = mcp.call("search", query="pi 5 review")
 
@@ -109,8 +110,10 @@ def test_every_provider_failing_is_a_tool_error_naming_each_provider(
         "exa",
         "tavily",
         "duckduckgo",
+        "searxng",
     ]
     shown = text(result)
     assert "Every Search Provider failed for 'pi 5 review'" in shown
     assert "duckduckgo: answered HTTP 500" in shown
+    assert "searxng: answered HTTP 500" in shown
     assert firecrawl.paths == []

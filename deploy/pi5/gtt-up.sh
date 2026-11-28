@@ -60,6 +60,10 @@ passes_canary() {
   log "checking $new against the Canary Set before it takes traffic"
   candidate rm -sf candidate > /dev/null 2>&1 || true
   docker tag "$new" "$CANDIDATE_TAG"
+  # SearXNG (a Search Provider) must be up for the candidate's Canary searches, even
+  # on the first deploy after a compose.yml that adds it. Failing to start it doesn't
+  # stop the deploy: search falls back to the other Providers.
+  docker compose up -d --no-deps searxng || log "warning: SearXNG didn't start"
   if ! candidate up -d --no-deps candidate; then
     deploy_incident "$new" "it wouldn't start"
     return 1
