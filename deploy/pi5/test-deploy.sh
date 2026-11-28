@@ -48,12 +48,15 @@ check "IMAGE_TAG pins another version" \
 check "never builds on the Pi" test "$(q '.services.scraper.build // "none"')" = "none"
 check "restarts unless stopped" test "$(q .services.scraper.restart)" = "unless-stopped"
 mem=$(q .services.scraper.mem_limit)
-check "memory capped at 2 GiB or less (of 16)" test "$mem" -gt 0 -a "$mem" -le $((2 * 1024 * 1024 * 1024))
+check "memory capped at 3 GiB or less (of 16), Chrome included" test "$mem" -gt 0 -a "$mem" -le $((3 * 1024 * 1024 * 1024))
 check "no swap beyond the memory cap" test "$(q .services.scraper.memswap_limit)" = "$mem"
 check "CPU capped at 2 of the Pi's 4 cores" \
   python3 -c "import sys; c=float(sys.argv[1]); sys.exit(not 0 < c <= 2)" "$(q .services.scraper.cpus)"
 check "process count capped" test "$(q '.services.scraper.pids_limit // 0')" -gt 0
 check "OOM killer picks the scraper before tailscaled" test "$(q '.services.scraper.oom_score_adj // 0')" -gt 0
+shm=$(q '.services.scraper.shm_size // 0')
+check "Chrome's shared memory sized past Docker's 64 MB default, within the memory cap" \
+  test "$shm" -ge $((256 * 1024 * 1024)) -a "$shm" -lt "$mem"
 check "logs rotate (json-file, size-limited)" \
   test "$(q '.services.scraper.logging | "\(.driver) \(.options["max-size"]) \(.options["max-file"])"')" = "json-file 10m 3"
 check "has a healthcheck" test "$(q '.services.scraper.healthcheck.test | length')" -gt 0
@@ -76,8 +79,13 @@ check "publishes no port: it never takes traffic" test "$(q '.services.candidate
 check "has no volume: never touches the live cache" test "$(q '.services.candidate.volumes // [] | length')" = 0
 check "on the live service's network, so it can reach http://scraper:3002" \
   test "$(q '.services.candidate.networks | keys | join(",")')" = "default"
-check "memory capped at 1 GiB, so live + candidate leave tailscaled room" \
-  test "$(q .services.candidate.mem_limit)" -le $((1024 * 1024 * 1024))
+check "memory capped at 1.5 GiB, Chrome included" \
+  test "$(q .services.candidate.mem_limit)" -le $((1536 * 1024 * 1024))
+check "  live + candidate stay within 4.5 of 16 GiB, leaving tailscaled room" \
+  test $(( mem + $(q .services.candidate.mem_limit) )) -le $((4608 * 1024 * 1024))
+check "  Chrome's shared memory sized, within its cap" \
+  test "$(q '.services.candidate.shm_size // 0')" -ge $((128 * 1024 * 1024)) -a \
+       "$(q '.services.candidate.shm_size // 0')" -lt "$(q .services.candidate.mem_limit)"
 check "  no swap beyond it" test "$(q .services.candidate.memswap_limit)" = "$(q .services.candidate.mem_limit)"
 check "CPU capped at 1 core" test "$(q .services.candidate.cpus)" = "1"
 check "OOM killer picks the candidate first" \

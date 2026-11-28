@@ -71,8 +71,9 @@ def test_image_only_pdf_is_rejected_locally_and_escalates_to_the_paid_fetcher(
     data = body["data"]
     assert data["fetcher"] == "paid"
     assert data["markdown"].startswith("Invoice 0042.")
-    plain, paid = data["attempts"]
+    plain, chrome, paid = data["attempts"]
     assert (plain["fetcher"], plain["verdict"], plain["reason"]) == ("plain", "rejected", "too_short")
+    assert (chrome["fetcher"], chrome["verdict"]) == ("chrome", "rejected")
     assert (paid["fetcher"], paid["verdict"]) == ("paid", "accepted")
     assert [s.body["url"] for s in firecrawl.scrapes] == [url]
 
@@ -86,7 +87,8 @@ def test_unreadable_pdf_is_rejected_and_escalates_instead_of_erroring(
     status, body = scrape(client, url)
 
     assert status == 502
-    plain, paid = body["attempts"]
+    plain, chrome, paid = body["attempts"]
     assert (plain["fetcher"], plain["verdict"], plain["reason"]) == ("plain", "rejected", "too_short")
+    assert (chrome["fetcher"], chrome["verdict"]) == ("chrome", "rejected")
     assert paid["fetcher"] == "paid"
     assert len(firecrawl.scrapes) == 1

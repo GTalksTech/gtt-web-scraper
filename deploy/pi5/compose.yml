@@ -5,7 +5,9 @@
 # Pi's Tailscale IPv4. See deploy/pi5/README.md.
 #
 # pi5 is also the tailnet's exit node and subnet router: these limits keep the
-# scraper from ever starving tailscaled of memory or CPU.
+# scraper from ever starving tailscaled of memory or CPU. Chrome (the Chrome
+# Fetcher's Engine) runs inside the container, so its processes, and the shared
+# memory it uses, count against the same caps.
 
 name: gtt-web-scraper
 
@@ -30,11 +32,16 @@ services:
     volumes:
       - cache:/app/data
     restart: unless-stopped
-    # 2 of 4 cores and 2 of 16 GB, no swap beyond that, bounded process count.
+    # 2 of 4 cores and 3 of 16 GB (the service plus Chrome with at most
+    # chrome.max_pages pages open), no swap beyond that, bounded process count
+    # (Chrome's threads count too).
     cpus: 2.0
-    mem_limit: 2g
-    memswap_limit: 2g
-    pids_limit: 512
+    mem_limit: 3g
+    memswap_limit: 3g
+    pids_limit: 1024
+    # Chrome shares page data between its processes through /dev/shm; Docker's
+    # 64 MB default crashes tabs. It is charged to the memory cap above.
+    shm_size: 512m
     # Under host-wide memory pressure the kernel kills the scraper, not tailscaled.
     oom_score_adj: 500
     healthcheck:
@@ -63,11 +70,13 @@ services:
       - path: .env
         required: true
     restart: "no"
-    # Smaller than the live service, so the two together still leave tailscaled room.
+    # Smaller than the live service, so the two together (4.5 of 16 GB) still leave
+    # tailscaled room. Enough for Chrome with the Canary Set's pages, one at a time.
     cpus: 1.0
-    mem_limit: 1g
-    memswap_limit: 1g
-    pids_limit: 256
+    mem_limit: 1536m
+    memswap_limit: 1536m
+    pids_limit: 512
+    shm_size: 256m
     oom_score_adj: 800
     logging:
       driver: json-file

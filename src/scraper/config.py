@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml
+
+if TYPE_CHECKING:
+    from .fetchers.chrome import Engine
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_PATH = REPO_ROOT / "config" / "scraper.yaml"
@@ -29,6 +33,39 @@ class PaidConfig:
     quota_recheck_s: float = 21600.0
     # From the environment (FIRECRAWL_API_KEY), never from the YAML file.
     api_key: str | None = None
+
+
+@dataclass
+class ChromeConfig:
+    # Real Chrome, in a visible window. On the Pi the window is on a virtual display
+    # (Xvfb, started by the image); headless Chrome is easier for sites to spot.
+    headless: bool = False
+    # The browser profile (cookies, cache, history) kept between pages and restarts, so
+    # the browser looks like a returning visitor. A relative path is from the repo root;
+    # in the container it is in the cache volume.
+    profile_dir: str = "data/chrome-profile"
+    # Timezone and locale the browser reports. They match the home connection, whose
+    # address sites can place.
+    timezone: str = "America/New_York"
+    locale: str = "en-US"
+    # Pages open at once; more requests wait for one to close.
+    max_pages: int = 2
+    # The browser is closed and started again after this many pages, before memory
+    # creeps up.
+    restart_after_pages: int = 50
+    # How long one page may take to load.
+    timeout_s: float = 30.0
+    # After the page has loaded, how long to wait for its scripts to finish fetching.
+    settle_s: float = 5.0
+    # After Chrome fails to start, requests skip it this long before one tries again.
+    start_retry_s: float = 300.0
+    # Makes the Engine the Chrome Fetcher drives. None for real Chrome through
+    # Patchright; tests put a fake here. Never from the YAML file.
+    engine: Callable[[ChromeConfig], Engine] | None = None
+
+    def resolved_profile_dir(self) -> Path:
+        path = Path(self.profile_dir)
+        return path if path.is_absolute() else REPO_ROOT / path
 
 
 @dataclass
@@ -173,8 +210,9 @@ def load_source_list(path: Path) -> SourceList:
 
 @dataclass
 class Config:
-    ladder: list[str] = field(default_factory=lambda: ["plain", "paid"])
+    ladder: list[str] = field(default_factory=lambda: ["plain", "chrome", "paid"])
     plain: PlainConfig = field(default_factory=PlainConfig)
+    chrome: ChromeConfig = field(default_factory=ChromeConfig)
     paid: PaidConfig = field(default_factory=PaidConfig)
     gate: GateConfig = field(default_factory=GateConfig)
     cache: CacheConfig = field(default_factory=CacheConfig)
@@ -197,6 +235,7 @@ def load_config(path: str | Path | None = None) -> Config:
     return Config(
         ladder=list(raw.get("ladder", Config().ladder)),
         plain=PlainConfig(**raw.get("plain", {})),
+        chrome=ChromeConfig(**raw.get("chrome", {})),
         paid=PaidConfig(
             **raw.get("paid", {}), api_key=os.environ.get("FIRECRAWL_API_KEY") or None
         ),

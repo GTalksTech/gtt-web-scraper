@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>How Raspberry Pi 5 Handles Sustained Workloads | Example Tech Notes</title>
+  <meta property="article:published_time" content="2026-10-14T09:30:00Z">
+  <script defer src="/static/js/main.7e1f04c2.js"></script>
+</head>
+<body>
+  <noscript>You need to enable JavaScript to run this app.</noscript>
+  <div id="root">
+  <!-- What the app's JavaScript renders. Only a browser runs it: tests/fakechrome.py
+       puts this markup in the page, the plain download sees an empty shell. -->
+  <script type="text/x-fake-js">
+    <article>
+      <h1>How Raspberry Pi 5 Handles Sustained Workloads</h1>
+      <p class="byline">By Sam Example, 14 October 2026</p>
+      <p>Small single-board computers are often judged by short benchmarks that finish before the
+      chip has had time to warm up. We wanted to know what happens when a Raspberry Pi 5 runs the
+      same job for a full day, so we left one compiling a large codebase in a loop for twenty-four
+      hours and logged its temperature, clock speed and throughput every ten seconds.</p>
+      <h2>The setup</h2>
+      <p>The board sat in a plain plastic case on a desk at room temperature, with the official
+      active cooler fitted and the stock power supply. Nothing was overclocked. The storage was an
+      NVMe drive on the PCIe adapter, which removes the microSD card as a bottleneck and makes the
+      processor the part under test rather than the disk.</p>
+      <p>We measured three things: the reported SoC temperature, the ARM clock as seen by the
+      firmware, and how many compile iterations completed per hour. A fall in iterations per hour
+      would tell us that throttling was costing real work, not just a number on a dashboard.</p>
+      <h2>What we saw</h2>
+      <p>With the active cooler the board settled at a steady temperature within about fifteen
+      minutes and stayed there. The fan cycled between its low and medium speeds and the clock
+      never dropped below its rated maximum. Throughput across the day varied by less than two
+      percent from hour to hour, which is within the noise of the build itself.</p>
+      <p>Without the cooler the story changed. The temperature climbed until the firmware started
+      reducing the clock, and throughput fell by roughly a fifth once the board had been running
+      for an hour. It never crashed, and it recovered as soon as the load stopped, but anyone
+      planning to run long jobs should treat the cooler as part of the computer, not an accessory.</p>
+      <h2>Takeaways</h2>
+      <p>For always-on duties such as a home server, a network appliance or a small scraper, the
+      Raspberry Pi 5 is comfortable as long as it can shed its heat. Leave headroom in memory and
+      processor limits for the services that matter most, and watch the temperature for the first
+      week so that you know what normal looks like before something goes wrong.</p>
+    </article>
+  </script>
+  </div>
+</body>
+</html>

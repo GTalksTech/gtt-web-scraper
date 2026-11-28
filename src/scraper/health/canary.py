@@ -6,7 +6,7 @@ as a Caller would, live (never from the cache).
 Each page forces one Fetcher (the plain download unless it says otherwise), so a run
 never spends the Paid Fetcher's quota and a known-bad page can't escalate to it. A page
 that checks a Site Adapter forces that adapter instead, so a failing adapter can't hide
-behind the Ladder.
+behind the Ladder, and a JavaScript-heavy page forces the Chrome Fetcher.
 
 Each search is asked of every Search Provider the service has, one at a time, so a
 failing Provider can't hide behind the next one in the chain.
