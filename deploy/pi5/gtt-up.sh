@@ -100,7 +100,10 @@ if [[ -z "$before" && -s "$LIVE" ]] && docker image inspect "$(cat "$LIVE")" > /
   docker tag "$before" "$ref"
   docker compose up -d --remove-orphans
 fi
-if ! docker compose pull --quiet; then
+# --policy always: compose.yml says pull_policy: missing (so a boot without internet
+# still starts the image already here), and Compose v2.30+ applies that to `pull`
+# too, skipping a newer :main as "already present locally".
+if ! docker compose pull --quiet --policy always; then
   log "warning: pulling from GHCR failed; running the image already on the Pi"
 fi
 pulled="$(tagged_id "$ref")"
