@@ -49,7 +49,11 @@ def test_a_new_service_has_served_nothing(client: TestClient) -> None:
     assert seen["pages"] == {"requests": 0, "servedBy": {}}
     assert seen["searches"] == {"requests": 0, "servedBy": {}}
     assert seen["checks"] == {"pages": 0, "searches": 0}
-    assert [(f["fetcher"], f["attempts"]) for f in seen["fetchers"]] == [("plain", 0), ("paid", 0)]
+    assert [(f["fetcher"], f["attempts"]) for f in seen["fetchers"]] == [
+        ("plain", 0),
+        ("chrome", 0),
+        ("paid", 0),
+    ]
 
 
 def test_page_requests_are_counted_by_what_served_them(

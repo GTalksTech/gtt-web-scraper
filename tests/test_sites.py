@@ -111,13 +111,13 @@ BLOCKS = {
 
 
 @pytest.mark.parametrize("block", BLOCKS.values(), ids=BLOCKS.keys())
-def test_a_block_puts_the_site_on_a_cool_down_that_skips_the_plain_download(
+def test_a_block_puts_the_site_on_a_cool_down_that_skips_the_home_connection(
     client: TestClient, web: FakeWeb, firecrawl: FakeFirecrawl, block: FakeResponse
 ) -> None:
     blocked = web.serve("/news", block)
     later = web.serve("/sport", page("article.html"))
     # Only the later page is on Firecrawl, so the site isn't remembered as needing the
-    # Paid Fetcher: only the cool-down keeps the plain download away.
+    # Paid Fetcher: only the cool-down keeps the plain download and Chrome away.
     firecrawl.serve(later, firecrawl_page("article.html", ARTICLE_MARKDOWN))
 
     scrape(client, blocked)
@@ -128,6 +128,7 @@ def test_a_block_puts_the_site_on_a_cool_down_that_skips_the_plain_download(
     assert body["data"]["fetcher"] == "paid"
     assert tried(body["data"]) == [
         ("plain", "rejected", "cooling_down"),
+        ("chrome", "rejected", "cooling_down"),
         ("paid", "accepted", "ok"),
     ]
     assert "127.0.0.1 is on a cool-down" in body["data"]["attempts"][0]["detail"]
@@ -277,7 +278,11 @@ def test_remembered_fetcher_is_trusted_only_for_a_while_after_it_first_worked(
     _, next_one = scrape(client, needs_paid(web, firecrawl, "/four"))
 
     assert tried(within["data"]) == [("paid", "accepted", "ok")]
-    assert tried(after["data"]) == [("plain", "rejected", "soft_404"), ("paid", "accepted", "ok")]
+    assert tried(after["data"]) == [
+        ("plain", "rejected", "soft_404"),
+        ("chrome", "rejected", "soft_404"),
+        ("paid", "accepted", "ok"),
+    ]
     # Having needed the Paid Fetcher again, the site is trusted to it afresh.
     assert tried(next_one["data"]) == [("paid", "accepted", "ok")]
 
@@ -351,12 +356,12 @@ def test_forcing_the_plain_download_does_not_override_a_cool_down(
 def test_forcing_an_unknown_fetcher_is_refused(client: TestClient, web: FakeWeb) -> None:
     url = web.serve("/article", page("article.html"))
 
-    status, body = scrape(client, url, fetcher="chrome")
+    status, body = scrape(client, url, fetcher="firefox")
 
     assert status == 422
     assert body["success"] is False
     assert body["code"] == "UNKNOWN_FETCHER"
-    assert "plain, paid" in body["error"]
+    assert "plain, chrome, paid" in body["error"]
     assert web.hits("/article") == 0
 
 

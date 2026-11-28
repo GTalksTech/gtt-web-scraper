@@ -19,6 +19,7 @@ from scraper.api import create_app
 from scraper.config import CANARY_SET_FILE, DEFAULT_PATH, Config, load_config
 from scraper.health.__main__ import deploy_check, health_run, write_incidents
 from scraper.health.canary import CanaryEntry, CanarySet, SearchCanary, load_canary_set, run_canary
+from scraper.sites import site_of
 
 from .fakefirecrawl import FakeFirecrawl, firecrawl_page
 from .fakesearch import PROVIDERS, FakeSearchProviders, Hit, hits
@@ -73,6 +74,14 @@ def test_a_new_service_has_no_attempts_for_any_fetcher(client: TestClient) -> No
     assert rates(client) == {
         "plain": {
             "fetcher": "plain",
+            "attempts": 0,
+            "successes": 0,
+            "successRate": None,
+            "unavailable": 0,
+            "lastUnavailable": None,
+        },
+        "chrome": {
+            "fetcher": "chrome",
             "attempts": 0,
             "successes": 0,
             "successRate": None,
@@ -523,12 +532,21 @@ def test_the_seeded_canary_set_checks_every_site_adapter_once() -> None:
     pages = load_canary_set(DEFAULT_PATH.parent / CANARY_SET_FILE).pages
     adapters = load_config().adapters.enabled
 
-    forced = sorted(e.fetcher for e in pages if e.fetcher != "plain")
+    forced = sorted(e.fetcher for e in pages if e.fetcher in adapters)
 
     assert forced == sorted(adapters)
     # Never through the Paid Fetcher (or the Ladder that ends in it): a daily run must
     # not spend its quota.
-    assert all(e.fetcher in ["plain", *adapters] for e in pages)
+    assert all(e.fetcher in ["plain", "chrome", *adapters] for e in pages)
+
+
+def test_the_seeded_canary_set_has_javascript_heavy_pages_for_the_chrome_fetcher() -> None:
+    pages = load_canary_set(DEFAULT_PATH.parent / CANARY_SET_FILE).pages
+    chrome = [e for e in pages if e.fetcher == "chrome"]
+
+    assert len(chrome) >= 2
+    assert all(e.expected == "accepted" for e in chrome)
+    assert len({site_of(e.url) for e in chrome}) == len(chrome)  # one site each
 
 
 def test_the_seeded_canary_set_has_searches_asked_of_every_provider() -> None:

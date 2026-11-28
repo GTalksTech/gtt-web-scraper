@@ -10,9 +10,9 @@
 #   expected:  accepted (real content), suspect, or rejected (known-bad: never content)
 #   reason:    optional; the Verdict reason expected too (e.g. http_404)
 #   fetcher:   optional; the Fetcher or Site Adapter to force (default plain, the
-#              plain download), or "auto" for none. Keep it plain or a Site Adapter:
-#              a run must never spend the Paid Fetcher's quota, and a known-bad page
-#              would otherwise escalate to it.
+#              plain download), or "auto" for none. Keep it plain, chrome (the Chrome
+#              Fetcher) or a Site Adapter: a run must never spend the Paid Fetcher's
+#              quota, and a known-bad page would otherwise escalate to it.
 #
 # Search entries (query/expect) are described with them, at the end.
 #
@@ -23,7 +23,7 @@
 #
 # Seeded 2026-11-27 and checked with the plain download from a home connection: every
 # entry got its expected Verdict. Left out then: raspberrypi.com (Cloudflare
-# challenge), blog.rust-lang.org (rendered by JavaScript), and kernel.org, the Rust
+# challenge), blog.rust-lang.org (rendered by JavaScript; now a Chrome Fetcher entry below), and kernel.org, the Rust
 # book's intro and docs.docker.com/compose/ (too little text: suspect), and
 # notion.so's home page (real content, not a shell, from here).
 
@@ -116,6 +116,19 @@
 - url: https://www.reddit.com/r/raspberry_pi/
   expected: accepted
   fetcher: reddit
+
+# ── JavaScript-heavy pages, forced through the Chrome Fetcher ──────────────
+# Empty shells to the plain download (too_short and empty_shell on 2026-11-27);
+# real content only once Chrome has run their scripts. Forced, so a broken Chrome
+# can't hide behind the Paid Fetcher (and a run never spends its quota). Added
+# 2026-11-27 and checked then in the arm64 image (Chrome 158 under Xvfb, pi5's
+# memory caps): both accepted.
+- url: https://blog.rust-lang.org/
+  expected: accepted
+  fetcher: chrome
+- url: https://crates.io/crates/serde
+  expected: accepted
+  fetcher: chrome
 
 # ── searches ───────────────────────────────────────────────────────────────
 # Each search entry:

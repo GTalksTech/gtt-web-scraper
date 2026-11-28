@@ -31,6 +31,7 @@ from .adapters import ADAPTER_NAMES, ApiError, SiteAdapter, build_adapters
 from .cache import PageCache
 from .config import Config
 from .fetchers import COOLING_DOWN, Fetcher, FetchError, FetcherUnavailable
+from .fetchers.chrome import ChromeFetcher
 from .fetchers.paid import PaidFetcher
 from .fetchers.plain import PlainFetcher
 from .gate import BLOCKED, CHALLENGE, FETCH_ERROR, INTERACTIVE_CHALLENGE, Verdict, judge
@@ -91,6 +92,7 @@ UNHANDLED_URL = "unhandled_url"
 def _build_ladder(config: Config) -> list[Fetcher]:
     available: dict[str, Fetcher] = {
         "plain": PlainFetcher(config.plain),
+        "chrome": ChromeFetcher(config.chrome),
         "paid": PaidFetcher(config.paid),
     }
     return [available[name] for name in config.ladder]

@@ -82,8 +82,10 @@ def test_rejected_plain_download_escalates_to_the_paid_fetcher(
     assert data["metadata"]["sourceURL"] == url
     assert data["metadata"]["statusCode"] == 200
     assert data["publishedDate"] == "2026-10-14"
+    # The block put the site on a cool-down, which keeps Chrome off it too.
     assert tried(data) == [
         ("plain", "rejected", "interactive_challenge"),
+        ("chrome", "rejected", "cooling_down"),
         ("paid", "accepted", "ok"),
     ]
     assert len(firecrawl.scrapes) == 1
@@ -102,13 +104,15 @@ def test_exhausted_quota_fails_explicitly_and_lists_every_fetcher_tried(
     assert status == 502
     assert body["success"] is False
     assert "data" not in body
-    assert body["error"].startswith("Paid Fetcher unavailable: quota exhausted")
+    assert body["error"].startswith("chrome skipped: 127.0.0.1 is on a cool-down")
+    assert "Paid Fetcher unavailable: quota exhausted. No Fetcher produced" in body["error"]
     assert "plain: rejected (interactive_challenge)" in body["error"]
     assert tried(body) == [
         ("plain", "rejected", "interactive_challenge"),
+        ("chrome", "rejected", "cooling_down"),
         ("paid", "rejected", "quota_exhausted"),
     ]
-    assert body["attempts"][1]["detail"] == "Paid Fetcher unavailable: quota exhausted"
+    assert body["attempts"][2]["detail"] == "Paid Fetcher unavailable: quota exhausted"
 
 
 def test_once_quota_is_exhausted_the_paid_fetcher_is_unavailable(
@@ -127,6 +131,7 @@ def test_once_quota_is_exhausted_the_paid_fetcher_is_unavailable(
     assert body["error"].startswith("Paid Fetcher unavailable: quota exhausted")
     assert tried(body) == [
         ("plain", "rejected", "soft_404"),
+        ("chrome", "rejected", "soft_404"),
         ("paid", "rejected", "quota_exhausted"),
     ]
     assert len(firecrawl.scrapes) == 1  # the second request never reached Firecrawl
@@ -174,8 +179,8 @@ def test_paid_fetcher_without_an_api_key_is_unavailable(
     status, body = scrape(client, url)
 
     assert status == 502
-    assert body["error"].startswith("Paid Fetcher unavailable: FIRECRAWL_API_KEY is not set")
-    assert tried(body)[1] == ("paid", "rejected", "not_configured")
+    assert "Paid Fetcher unavailable: FIRECRAWL_API_KEY is not set" in body["error"]
+    assert tried(body)[2] == ("paid", "rejected", "not_configured")
     assert firecrawl.scrapes == []
 
 
@@ -193,7 +198,11 @@ def test_suspect_paid_result_is_returned_flagged_possibly_partial(
     assert data["fetcher"] == "paid"
     assert data["verdict"] == "suspect"
     assert data["confidence"] == "possibly_partial"
-    assert tried(data) == [("plain", "rejected", "empty_shell"), ("paid", "suspect", "thin")]
+    assert tried(data) == [
+        ("plain", "rejected", "empty_shell"),
+        ("chrome", "rejected", "empty_shell"),
+        ("paid", "suspect", "thin"),
+    ]
 
 
 def test_accepted_plain_download_never_spends_paid_quota(
@@ -221,9 +230,10 @@ def test_paid_fetcher_result_also_passes_the_content_gate(
     assert "data" not in body
     assert tried(body) == [
         ("plain", "rejected", "cookie_wall"),
+        ("chrome", "rejected", "cookie_wall"),
         ("paid", "rejected", "cookie_wall"),
     ]
-    assert "plain: rejected (cookie_wall); paid: rejected (cookie_wall)" in body["error"]
+    assert "chrome: rejected (cookie_wall); paid: rejected (cookie_wall)" in body["error"]
 
 
 def test_paid_fetcher_challenge_is_rejected_without_spending_quota_on_polls(
@@ -235,5 +245,9 @@ def test_paid_fetcher_challenge_is_rejected_without_spending_quota_on_polls(
     status, body = scrape(client, url)
 
     assert status == 502
-    assert tried(body) == [("plain", "rejected", "challenge"), ("paid", "rejected", "challenge")]
+    assert tried(body) == [
+        ("plain", "rejected", "challenge"),
+        ("chrome", "rejected", "cooling_down"),
+        ("paid", "rejected", "challenge"),
+    ]
     assert len(firecrawl.scrapes) == 1

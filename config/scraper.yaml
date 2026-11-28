@@ -6,6 +6,8 @@
 ladder:
   # Fetchers in the order a request climbs them, cheapest first.
   - plain
+  # Real Chrome, for pages the plain download rejects (JavaScript apps, mostly).
+  - chrome
   # The Paid Fetcher (Firecrawl) is always last: it spends quota. Its key comes from
   # FIRECRAWL_API_KEY in .env, never from this file.
   - paid
@@ -14,6 +16,27 @@ plain:
   # Browser whose network signature (TLS, HTTP/2, headers) the plain download imitates.
   impersonate: chrome
   timeout_s: 20
+
+chrome:
+  # Real Chrome for ARM64 driven by Patchright, in a visible window on the image's
+  # virtual display (Xvfb): headless Chrome is easier for sites to spot. It uses the
+  # home connection, so sites.min_interval_s and cool-downs apply to it like the plain
+  # download.
+  headless: false
+  # Kept between pages and restarts (in the cache volume), so Chrome looks like a
+  # returning visitor rather than a fresh install every time.
+  profile_dir: data/chrome-profile
+  # What the browser reports, matching the home connection (sites can place its address).
+  timezone: America/New_York
+  locale: en-US
+  # Pages open at once; more requests wait their turn. Each page costs a few hundred MB,
+  # and the container's memory cap (deploy/pi5/compose.yml) protects tailscaled.
+  max_pages: 2
+  # Chrome is closed and started again after this many pages, before its memory creeps up.
+  restart_after_pages: 50
+  # How long one page may take to load, then how long its scripts get to finish fetching.
+  timeout_s: 30
+  settle_s: 5
 
 paid:
   base_url: https://api.firecrawl.dev

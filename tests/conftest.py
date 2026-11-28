@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from scraper.api import create_app
 from scraper.config import Config, load_config
 
+from .fakechrome import FakeChrome
 from .fakefirecrawl import API_KEY, FakeFirecrawl
 from .fakesearch import KEYS, PROVIDERS, FakeSearchProviders
 from .fakeweb import FakeWeb
@@ -39,8 +40,13 @@ def providers() -> Iterator[FakeSearchProviders]:
 
 
 @pytest.fixture
+def chrome() -> FakeChrome:
+    return FakeChrome()
+
+
+@pytest.fixture
 def config(
-    firecrawl: FakeFirecrawl, providers: FakeSearchProviders, tmp_path: Path
+    firecrawl: FakeFirecrawl, providers: FakeSearchProviders, chrome: FakeChrome, tmp_path: Path
 ) -> Config:
     config = load_config()
     # Each test gets its own empty page cache.
@@ -50,6 +56,9 @@ def config(
     config.gate.challenge_poll_interval_s = 0.0
     # No spacing between requests unless a test asks for it: the fake web is one site.
     config.sites.min_interval_s = 0.0
+    # The Chrome Fetcher drives a fake Engine, never real Chrome.
+    config.chrome.engine = chrome.engine
+    config.chrome.profile_dir = str(tmp_path / "chrome-profile")
     # The Paid Fetcher talks to the fake Firecrawl, never the real one.
     config.paid.base_url = firecrawl.base_url
     config.paid.api_key = API_KEY

@@ -148,14 +148,15 @@ def test_suspect_results_are_cached(config: Config, web: FakeWeb) -> None:
 
 def test_failures_are_not_cached(config: Config, web: FakeWeb) -> None:
     client, _ = make_client(config)
-    url = web.serve("/story", page("cookie_wall.html"), page("article.html"))
+    # The plain download and the Chrome Fetcher both get the cookie wall at first.
+    url = web.serve("/story", page("cookie_wall.html"), page("cookie_wall.html"), page("article.html"))
 
     first_status, _ = scrape(client, url)
     status, body = scrape(client, url)
 
     assert first_status == 502
     assert status == 200
-    assert web.hits("/story") == 2
+    assert web.hits("/story") == 3
     assert body["data"]["metadata"]["cacheState"] == "miss"
     assert "Raspberry Pi 5 runs the" in body["data"]["markdown"]
 
