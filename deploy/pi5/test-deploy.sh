@@ -232,6 +232,7 @@ echo "gtt-up.sh"
 reset_fakes
 check "a new image deploys" up
 check "pulls, then brings the service up" ran_before "compose pull" "compose up -d --remove-orphans"
+check "pulls even though compose.yml says pull_policy: missing" ran "compose pull --quiet --policy always"
 check "compose sees the Pi's tailnet IP" grep -q "^compose up -d.*TAILNET_IP=100.64.0.5$" "$FAKE/docker.log"
 check "the new image is running" test "$(cat "$FAKE/running")" = "sha256:new"
 check "logs the deploy, old and new image" grep -q "sha256:old.*sha256:new\|sha256:new.*sha256:old" "$FAKE/out.log"
