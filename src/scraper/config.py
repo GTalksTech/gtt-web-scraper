@@ -57,6 +57,8 @@ class ChromeConfig:
     timeout_s: float = 30.0
     # After the page has loaded, how long to wait for its scripts to finish fetching.
     settle_s: float = 5.0
+    # After Chrome fails to start, requests skip it this long before one tries again.
+    start_retry_s: float = 300.0
     # Makes the Engine the Chrome Fetcher drives. None for real Chrome through
     # Patchright; tests put a fake here. Never from the YAML file.
     engine: Callable[[ChromeConfig], Engine] | None = None

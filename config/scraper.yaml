@@ -37,6 +37,9 @@ chrome:
   # How long one page may take to load, then how long its scripts get to finish fetching.
   timeout_s: 30
   settle_s: 5
+  # When Chrome won't start, the Chrome Fetcher is unavailable and requests go on to the
+  # Paid Fetcher; one request tries starting it again after this long.
+  start_retry_s: 300
 
 paid:
   base_url: https://api.firecrawl.dev

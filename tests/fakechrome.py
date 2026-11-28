@@ -27,6 +27,7 @@ _FAKE_JS = re.compile(r'<script type="text/x-fake-js">(.*?)</script>', re.S)
 class FakeChrome:
     def __init__(self) -> None:
         self.launches = 0
+        self.launch_attempts = 0
         self.closes = 0
         self.rendered: list[str] = []
         # The config each Engine was made with, in order.
@@ -53,6 +54,7 @@ class FakeEngine:
         self._running = False
 
     def start(self) -> None:
+        self._chrome.launch_attempts += 1
         if self._chrome.missing:
             raise EngineUnavailable("Chrome is not installed")
         self._running = True

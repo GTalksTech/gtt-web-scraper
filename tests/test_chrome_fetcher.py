@@ -181,6 +181,39 @@ def test_missing_chrome_is_unavailable_and_the_request_falls_to_the_paid_fetcher
     assert "Chrome is not installed" in detail
 
 
+def test_chrome_that_wont_start_is_not_retried_on_every_request(
+    config: Config, web: FakeWeb, chrome: FakeChrome
+) -> None:
+    config.chrome.start_retry_s = 3600
+    client = TestClient(create_app(config))
+    chrome.missing = True
+    urls = [web.serve(f"/app/{n}", page("js_app.html")) for n in range(3)]
+
+    answers = [scrape(client, url, fetcher="chrome") for url in urls]
+
+    assert [status for status, _ in answers] == [502] * 3
+    assert all(tried(b) == [("chrome", "rejected", "engine_unavailable")] for _, b in answers)
+    assert all("Chrome is not installed" in b["error"] for _, b in answers)
+    assert chrome.launch_attempts == 1
+
+
+def test_chrome_is_tried_again_once_the_retry_interval_has_passed(
+    config: Config, web: FakeWeb, chrome: FakeChrome, firecrawl: FakeFirecrawl
+) -> None:
+    config.chrome.start_retry_s = 0
+    client = TestClient(create_app(config))
+    chrome.missing = True
+    broken = web.serve("/app/one", page("js_app.html"))
+    firecrawl.serve(broken, firecrawl_page("article.html", ARTICLE_MARKDOWN))
+    scrape(client, broken)
+    chrome.missing = False  # installed now
+
+    status, body = scrape(client, web.serve("/app/two", page("js_app.html"), host="localhost"))
+
+    assert status == 200
+    assert body["data"]["fetcher"] == "chrome"
+
+
 def test_a_crashed_browser_fails_that_page_and_is_restarted_for_the_next(
     client: TestClient, web: FakeWeb, chrome: FakeChrome, firecrawl: FakeFirecrawl
 ) -> None:

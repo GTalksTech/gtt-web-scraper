@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import threading
+import time
 from collections.abc import Coroutine
 from contextlib import suppress
 from dataclasses import dataclass
@@ -55,6 +56,10 @@ class EngineCrashed(Exception):
     """The browser died while rendering; it must be started again."""
 
 
+class _NoAnswer(FetchError):
+    """Patchright didn't answer in time."""
+
+
 class Engine(Protocol):
     def start(self) -> None:
         """Start the browser. Raises EngineUnavailable."""
@@ -83,8 +88,12 @@ class ChromeFetcher:
         self._running = False
         self._crashed = False
         self._restarting = False
-        self._open = 0  # pages open right now
-        self._pages = 0  # pages opened since Chrome last started
+        self._open_pages = 0  # pages open right now
+        self._pages_since_start = 0
+        # Why Chrome last failed to start, and when (time.monotonic()). Until
+        # `start_retry_s` has passed, requests are refused at once instead of each
+        # waiting out another failed launch.
+        self._start_failure: tuple[str, float] | None = None
 
     def fetch(self, url: str) -> FetchedPage:
         self._open_page()
@@ -96,7 +105,7 @@ class ChromeFetcher:
             raise FetchError(f"Chrome crashed: {exc}") from exc
         finally:
             with self._cond:
-                self._open -= 1
+                self._open_pages -= 1
                 self._cond.notify_all()
         return build_page(
             requested_url=url,
@@ -110,24 +119,35 @@ class ChromeFetcher:
         """Wait for a free page, restarting or starting Chrome first if it's due."""
         config = self._config
         with self._cond:
-            self._cond.wait_for(lambda: self._open < config.max_pages and not self._restarting)
-            if self._running and (self._crashed or self._pages >= config.restart_after_pages):
+            self._cond.wait_for(
+                lambda: self._open_pages < config.max_pages and not self._restarting
+            )
+            due = self._crashed or self._pages_since_start >= config.restart_after_pages
+            if self._running and due:
                 self._restarting = True
-                self._cond.wait_for(lambda: self._open == 0)
+                self._cond.wait_for(lambda: self._open_pages == 0)
                 self._engine.stop()
                 self._running = self._crashed = self._restarting = False
                 self._cond.notify_all()
             if not self._running:
-                try:
-                    self._engine.start()
-                except EngineUnavailable as exc:
-                    raise FetcherUnavailable(
-                        ENGINE_UNAVAILABLE, f"Chrome Fetcher unavailable: {exc}"
-                    ) from exc
-                self._running = True
-                self._pages = 0
-            self._open += 1
-            self._pages += 1
+                self._start()
+            self._open_pages += 1
+            self._pages_since_start += 1
+
+    def _start(self) -> None:
+        """Start Chrome (the lock is held), or refuse while a recent start failed."""
+        failure = self._start_failure
+        if failure is not None and time.monotonic() - failure[1] < self._config.start_retry_s:
+            raise FetcherUnavailable(ENGINE_UNAVAILABLE, failure[0])
+        try:
+            self._engine.start()
+        except EngineUnavailable as exc:
+            why = f"Chrome Fetcher unavailable: {exc}"
+            self._start_failure = (why, time.monotonic())
+            raise FetcherUnavailable(ENGINE_UNAVAILABLE, why) from exc
+        self._start_failure = None
+        self._running = True
+        self._pages_since_start = 0
 
 
 # Files Chrome leaves in a profile to claim it. A container that stopped uncleanly
@@ -190,7 +210,11 @@ class PatchrightEngine:
         if self._loop is None or self._context is None or self._closed:
             raise EngineCrashed("Chrome isn't running")
         config = self._config
-        return self._call(self._render(url), config.timeout_s + config.settle_s + _MARGIN_S)
+        try:
+            return self._call(self._render(url), config.timeout_s + config.settle_s + _MARGIN_S)
+        except _NoAnswer as exc:
+            # Past the page's own load timeout: the browser itself is stuck.
+            raise EngineCrashed(str(exc)) from exc
 
     async def _render(self, url: str) -> Rendered:
         from patchright.async_api import Error as PlaywrightError
@@ -212,29 +236,28 @@ class PatchrightEngine:
         page.on("response", on_response)
         try:
             try:
-                await page.goto(url, wait_until="load", timeout=config.timeout_s * 1000)
+                first = await page.goto(url, wait_until="load", timeout=config.timeout_s * 1000)
             except PlaywrightTimeout as exc:
                 raise FetchError(f"Chrome timed out after {config.timeout_s:g}s loading the page") from exc
-            except PlaywrightError as exc:
-                if self._closed:
-                    raise EngineCrashed(_first_line(exc)) from exc
-                raise FetchError(f"Chrome couldn't load the page: {_first_line(exc)}") from exc
             # A page that keeps fetching (analytics, live updates) never goes idle; what
             # it has rendered by then is what it gets judged on.
             with suppress(PlaywrightTimeout):
                 await page.wait_for_load_state("networkidle", timeout=config.settle_s * 1000)
             html = await _content(page, PlaywrightError)
-            response = last[-1] if last else None
+            response = last[-1] if last else first
+            if response is None:
+                # No document response at all (e.g. a download): nothing to judge.
+                raise FetchError("Chrome got no page for the URL")
             return Rendered(
                 final_url=page.url,
-                status=response.status if response is not None else 200,
-                headers=await response.all_headers() if response is not None else {},
+                status=response.status,
+                headers=await response.all_headers(),
                 html=html,
             )
         except PlaywrightError as exc:
             if self._closed:
                 raise EngineCrashed(_first_line(exc)) from exc
-            raise FetchError(f"Chrome failed on the page: {_first_line(exc)}") from exc
+            raise FetchError(f"Chrome couldn't load the page: {_first_line(exc)}") from exc
         finally:
             with suppress(Exception):
                 await page.close()
@@ -269,7 +292,7 @@ class PatchrightEngine:
             return future.result(timeout=timeout_s)
         except concurrent.futures.TimeoutError as exc:
             future.cancel()
-            raise FetchError(f"Chrome didn't answer within {timeout_s:g}s") from exc
+            raise _NoAnswer(f"Chrome didn't answer within {timeout_s:g}s") from exc
 
 
 async def _content(page: Any, error: type[Exception]) -> str:
